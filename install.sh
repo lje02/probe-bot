@@ -126,10 +126,11 @@ add_node() {
             read -p "端口: " PORT
             read -p "密码: " PASS
 
+            # 增加 2>/dev/null 屏蔽冗余的证书生成提示信息
             openssl req -x509 -nodes -newkey rsa:2048 \
                 -keyout /etc/sing-box/tuic.key \
                 -out /etc/sing-box/tuic.crt \
-                -subj "/CN=apple.com" -days 3650
+                -subj "/CN=apple.com" -days 3650 2>/dev/null
 
             jq --arg port "$PORT" \
                --arg uuid "$UUID" \
@@ -148,7 +149,8 @@ add_node() {
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
             echo -e "${GREEN}TUIC5 配置成功 (自签名证书)${PLAIN}"
-            echo "节点链接: tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr&insecure=1#TUIC5"
+            # 补齐了 sni, alpn 并且修正了 allow_insecure 参数，提升多客户端兼容性
+            echo "节点链接: tuic://$UUID:$PASS@$IP:$PORT?sni=apple.com&alpn=h3&allow_insecure=1&congestion_control=bbr#TUIC5"
             ;;
         3)
             read -p "端口: " PORT
