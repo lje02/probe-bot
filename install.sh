@@ -110,9 +110,9 @@ add_node() {
             read -p "端口: " PORT
             UUID=$(uuidgen)
             read -p "SNI (如 www.microsoft.com): " SNI
-            KEYS=$(sing-box generate keypair)
-            PRIVATE=$(echo "$KEYS" | grep Private | awk '{print $3}')
-            PUBLIC=$(echo "$KEYS" | grep Public | awk '{print $3}')
+            KEYS=$(/usr/local/bin/sing-box generate keypair)
+            PRIVATE=$(echo "$KEYS" | awk '/Private key:/ {print $3}' | tr -d '[:space:]')
+            PUBLIC=$(echo "$KEYS" | awk '/Public key:/ {print $3}' | tr -d '[:space:]')
             SHORT_ID=$(openssl rand -hex 8)
             
             jq --arg port "$PORT" --arg uuid "$UUID" --arg sni "$SNI" --arg priv "$PRIVATE" --arg sid "$SHORT_ID" \
