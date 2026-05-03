@@ -93,7 +93,7 @@ add_node() {
             PUBLIC=$(echo "$KEYS" | awk -F': ' '/Public/ {print $2}' | tr -d '[:space:]')
             SHORT_ID=$(openssl rand -hex 8)
             read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
-            read -p "SNI (默认 www.microsoft.com): " SNI; SNI=${SNI:-"www.microsoft.com"}
+            read -p "SNI (默认 music.apple.com): " SNI; SNI=${SNI:-"music.apple.com"}
 
             jq --arg port "$PORT" \
                --arg uuid "$UUID" \
@@ -102,7 +102,7 @@ add_node() {
                --arg sid "$SHORT_ID" \
                '.inbounds += [{
                     "type":"vless",
-                    "tag":"vless-reality",
+                    "tag":("vless-reality-" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],
@@ -137,7 +137,7 @@ add_node() {
                --arg pass "$PASS" \
                '.inbounds += [{
                     "type":"tuic",
-                    "tag":"tuic-in",
+                    "tag":("tuic-in-" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"uuid":$uuid,"password":$pass}],
@@ -166,7 +166,7 @@ add_node() {
                --arg pass "$PASS" \
                '.inbounds += [{
                     "type":"hysteria2",
-                    "tag":"hy2-in",
+                    "tag":("hy2-in-" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"password":$pass}],
@@ -190,7 +190,7 @@ add_node() {
                --arg method "$METHOD" \
                '.inbounds += [{
                     "type":"shadowsocks",
-                    "tag":"ss-in",
+                    "tag":("ss-in-" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "method":$method,
@@ -211,7 +211,7 @@ add_node() {
                --arg pass "$PASS" \
                '.inbounds += [{
                     "type":"socks",
-                    "tag":"socks-in",
+                    "tag":("socks-in-" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"username":$user,"password":$pass}]
