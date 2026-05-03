@@ -107,19 +107,36 @@ add_node() {
     IP=$(get_ip)
     case $choice in
         1)
-            read -p "端口: " PORT
-            UUID=$(uuidgen)
-            read -p "SNI (如 www.microsoft.com): " SNI
+            read -p "请输入端口 (默认 443): " PORT
+            PORT=${PORT:-443}
+            
+            # 确保 uuidgen 可用，否则使用 sing-box 生成
+            UUID=$(uuidgen 2>/dev/null || /usr/local/bin/sing-box generate uuid)
+            
+            read -p "请输入 SNI (如 www.microsoft.com): " SNI
+            SNI=${SNI:-"www.microsoft.com"}
+            
+            # 健壮的密钥生成逻辑
             KEYS=$(/usr/local/bin/sing-box generate keypair)
             PRIVATE=$(echo "$KEYS" | awk '/Private key:/ {print $3}' | tr -d '[:space:]')
             PUBLIC=$(echo "$KEYS" | awk '/Public key:/ {print $3}' | tr -d '[:space:]')
             SHORT_ID=$(openssl rand -hex 8)
             
+            # 检查关键变量是否为空
+            if [[ -z "$PRIVATE" || -z "$PUBLIC" || -z "$UUID" ]]; then
+                echo -e "${RED}错误: 密钥或 UUID 生成失败，请检查 sing-box 是否安装正确！${PLAIN}"
+                return
+            fi
+
+            # 使用 jq 写入配置
             jq --arg port "$PORT" --arg uuid "$UUID" --arg sni "$SNI" --arg priv "$PRIVATE" --arg sid "$SHORT_ID" \
             '.inbounds += [{"type":"vless","tag":"vless-reality","listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$sni,"reality":{"enabled":true,"handshake":{"server":$sni,"server_port":443},"private_key":$priv,"short_id":[$sid]}}}]' $CONFIG_FILE > tmp.json && mv tmp.json $CONFIG_FILE
             
+            # 打印节点链接
+            echo -e "${GREEN}VLESS Reality 配置成功！${PLAIN}"
             LINK="vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality"
-            echo -e "${GREEN}节点链接: ${PLAIN}\n$LINK"
+            echo -e "${YELLOW}节点链接:${PLAIN}"
+            echo -e "${GREEN}$LINK${PLAIN}"
             ;;
         2)
             read -p "端口: " PORT
