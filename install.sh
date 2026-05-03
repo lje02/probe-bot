@@ -77,7 +77,7 @@ EOF
 add_node() {
     echo -e "${YELLOW}--- 添加节点配置 ---${PLAIN}"
     echo "1. VLESS + Reality"
-    echo "2. TUIC5(需打开允许不安全)"
+    echo "2. TUIC v5"
     echo "3. Hysteria2"
     echo "4. Shadowsocks (2022-blake3)"
     echo "5. Socks5"
