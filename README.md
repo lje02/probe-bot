@@ -1,1 +1,1 @@
-wget -P /root -N --no-check-certificate https://raw.githubusercontent.com/lje02/sing/main/install.sh && chmod +x /root/install.sh && /root/install.sh
+curl -Ls https://raw.githubusercontent.com/lje02/sing/main/install.sh -o /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb && ssb
