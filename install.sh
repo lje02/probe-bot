@@ -142,14 +142,13 @@ add_node() {
                     "users":[{"uuid":$uuid,"password":$pass}],
                     "tls":{
                         "enabled":true,
-                        "insecure":true,
                         "certificate_path":"/etc/sing-box/tuic.crt",
                         "key_path":"/etc/sing-box/tuic.key"
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
             echo -e "${GREEN}TUIC5 配置成功 (自签名证书)${PLAIN}"
-            echo "节点链接: tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr&alpn=h3#TUIC5"
+            echo "节点链接: tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr&alpn=h3&insecure=1#TUIC5"
             ;;
         3)
             read -p "端口: " PORT
