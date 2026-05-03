@@ -144,10 +144,8 @@ add_node() {
                     "tls":{
                         "enabled":true,
                         "certificate_path":"/etc/sing-box/tuic.crt",
-                        "key_path":"/etc/sing-box/tuic.key"
-                        "alpn": [
-                          "h3"
-                        ]
+                        "key_path":"/etc/sing-box/tuic.key",
+                        "alpn": ["h3"]
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
