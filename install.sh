@@ -129,7 +129,7 @@ add_node() {
             openssl req -x509 -nodes -newkey rsa:2048 \
                 -keyout /etc/sing-box/tuic.key \
                 -out /etc/sing-box/tuic.crt \
-                -subj "/CN=bing.com" -days 3650
+                -subj "/CN=apple.com" -days 3650
 
             jq --arg port "$PORT" \
                --arg uuid "$UUID" \
@@ -142,7 +142,7 @@ add_node() {
                     "users":[{"uuid":$uuid,"password":$pass}],
                     "tls":{
                         "enabled":true,
-                        "server_name": "bing.com",
+                        "server_name": "apple.com",
                         "insecure":true,
                         "certificate_path":"/etc/sing-box/tuic.crt",
                         "key_path":"/etc/sing-box/tuic.key"
