@@ -142,7 +142,6 @@ add_node() {
                     "users":[{"uuid":$uuid,"password":$pass}],
                     "tls":{
                         "enabled":true,
-                        "server_name":"apple.com",
                         "insecure":true,
                         "certificate_path":"/etc/sing-box/tuic.crt",
                         "key_path":"/etc/sing-box/tuic.key"
