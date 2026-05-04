@@ -114,6 +114,7 @@ EOF
     cp "$0" /usr/local/bin/ssb
     chmod +x /usr/local/bin/ssb
     systemctl start sing-box
+    enable_bbr
     echo -e "${GREEN}安装完成！输入 ssb 呼出菜单。${PLAIN}"
 }
 
