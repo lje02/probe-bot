@@ -519,8 +519,9 @@ while true; do
     echo "4. 链式代理设置"
     echo "5. 更新脚本或内核"
     echo "6. 备份 / 还原"
-    echo "7. 卸载"
-    echo -e " \033[1;32m  [8]  重启 sing-box 服务\033[0m" # 绿色加粗，很醒目
+    echo "7. 开启 BBR 网络加速"
+    echo "77. 卸载"
+    echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m" # 绿色加粗，很醒目
     echo "0. 退出"
     read -p "选择 [0-7]: " num
     case "$num" in
@@ -530,7 +531,8 @@ while true; do
         4) chain_proxy ;;
         5) update_all ;;
         6) backup_restore ;;
-        7)
+        7) enable_bbr ;;
+        77)
             echo -e "${RED}！！！警告：即将卸载 sing-box 并删除所有配置！！！${PLAIN}"
             read -p "确定要继续吗？(y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
@@ -546,7 +548,7 @@ while true; do
                 echo -e "${YELLOW}已取消卸载。${PLAIN}"
             fi
             ;;
-    8)
+    88)
             echo -e "${YELLOW}正在尝试重启 sing-box 服务...${PLAIN}"
             systemctl restart sing-box
             sleep 1
