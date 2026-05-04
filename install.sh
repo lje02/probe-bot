@@ -319,6 +319,7 @@ while true; do
     echo "5. 更新脚本或内核"
     echo "6. 备份 / 还原"
     echo "7. 卸载"
+    echo -e " \033[1;32m  [8]  重启 sing-box 服务\033[0m" # 绿色加粗，很醒目
     echo "0. 退出"
     read -p "选择 [0-7]: " num
     case "$num" in
@@ -329,6 +330,18 @@ while true; do
         5) update_all ;;
         6) backup_restore ;;
         7)
+        8)
+            echo -e "${YELLOW}正在尝试重启 sing-box 服务...${PLAIN}"
+            systemctl restart sing-box
+            sleep 1 # 等待一秒让内核反应一下
+            if systemctl is-active --quiet sing-box; then
+                echo -e "${GREEN}✔ 重启成功！服务正在运行。${PLAIN}"
+            else
+                echo -e "${RED}✘ 重启失败！${PLAIN}"
+                echo -e "${YELLOW}提示: 请尝试运行 'journalctl -u sing-box --no-pager -n 20' 查看错误日志。${PLAIN}"
+            fi
+            ;;
+
             systemctl stop sing-box
             systemctl disable sing-box
             rm -rf /etc/sing-box /usr/local/bin/sing-box /usr/local/bin/ssb /etc/systemd/system/sing-box.service
