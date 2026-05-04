@@ -131,7 +131,7 @@ add_node() {
 
     IP=$(get_ip)
     case $choice in
-       1)
+        1)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
             KEYS=$($SB_BIN generate reality-keypair)
             PRIVATE=$(echo "$KEYS" | awk -F': ' '/Private/ {print $2}' | tr -d '[:space:]')
