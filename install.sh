@@ -227,28 +227,73 @@ add_node() {
 # --- 三、四、五：配置管理 ---
 manage_configs() {
     echo -e "${YELLOW}--- 节点列表 ---${PLAIN}"
-    jq -r '.inbounds[] | "Tag: \(.tag) | Port: \(.listen_port)"' "$CONFIG_FILE" | cat -n
+    # 列出所有入站，带上序号
+    jq -r '.inbounds[] | "Tag: \(.tag) | Type: \(.type) | Port: \(.listen_port)"' "$CONFIG_FILE" | cat -n
     read -p "请选择序号 (q退出): " idx
     [[ "$idx" == "q" ]] && return
 
-    echo "1. 查看详情 | 2. 修改端口 | 3. 删除配置"
+    echo -e "\n1. 查看详情并生成链接 | 2. 修改端口 | 3. 删除配置"
     read -p "选择操作: " op
     case $op in
         1)
-            jq ".inbounds[$(($idx-1))]" "$CONFIG_FILE"
+            # 获取选中的入站配置内容
+            local CONF=$(jq -c ".inbounds[$(($idx-1))]" "$CONFIG_FILE")
+            local TYPE=$(echo "$CONF" | jq -r .type)
+            local PORT=$(echo "$CONF" | jq -r .listen_port)
+            local IP=$(get_ip)
+
+            echo -e "\n${GREEN}================ 原始 JSON 配置 ================${PLAIN}"
+            echo "$CONF" | jq .
+            echo -e "${GREEN}===============================================${PLAIN}"
+
+            echo -e "\n${YELLOW}>>>> 自动生成的节点分享链接 <<<<${PLAIN}"
+            case $TYPE in
+                vless)
+                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                    local SNI=$(echo "$CONF" | jq -r '.tls.server_name')
+                    local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0]')
+                    # 注意：Reality 的公钥 (pbk) 通常不存在服务器 config 里，这里只能提示用户手动填写或从创建记录中找
+                    echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=这里需填写你的公钥&sid=$SID&type=tcp&flow=xtls-rprx-vision#VLESS_$PORT${PLAIN}"
+                    echo -e "${RED}(提示: VLESS Reality 的 Public Key 仅在创建时显示，不保存在服务器配置文件中)${PLAIN}"
+                    ;;
+                tuic)
+                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                    echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?sni=apple.com&alpn=h3&allow_insecure=1&congestion_control=bbr#TUIC5_$PORT${PLAIN}"
+                    ;;
+                hysteria2)
+                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                    echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=1&sni=google.com#Hy2_$PORT${PLAIN}"
+                    ;;
+                shadowsocks)
+                    local METHOD=$(echo "$CONF" | jq -r .method)
+                    local PASS=$(echo "$CONF" | jq -r .password)
+                    local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
+                    echo -e "${BLUE}ss://$SS_BASE64@$IP:$PORT#SS_$PORT${PLAIN}"
+                    ;;
+                socks)
+                    local USER=$(echo "$CONF" | jq -r '.users[0].username')
+                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                    echo -e "${BLUE}Socks5 链接: socks5://$USER:$PASS@$IP:$PORT${PLAIN}"
+                    ;;
+                *)
+                    echo -e "${RED}该协议暂不支持自动生成链接预览${PLAIN}"
+                    ;;
+            esac
+            echo -e "${YELLOW}-----------------------------------------------${PLAIN}"
             ;;
         2)
             read -p "新端口: " NP
             jq ".inbounds[$(($idx-1))].listen_port = ($NP|tonumber)" "$CONFIG_FILE" > tmp.json
             mv tmp.json "$CONFIG_FILE"
             systemctl restart sing-box
-            echo "端口已更新"
+            echo "端口已更新并重启服务"
             ;;
         3)
             jq "del(.inbounds[$(($idx-1))])" "$CONFIG_FILE" > tmp.json
             mv tmp.json "$CONFIG_FILE"
             systemctl restart sing-box
-            echo "已删除"
+            echo "配置已删除并重启服务"
             ;;
     esac
 }
