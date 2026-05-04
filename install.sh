@@ -172,7 +172,8 @@ add_node() {
     echo "2. TUIC v5"
     echo "3. Hysteria2"
     echo "4. Shadowsocks (2022-blake3)"
-    echo "5. Socks5"
+    echo "5. VLESS + WS +CF"
+    echo "6. Socks5"
     echo "0. 返回"
     read -p "请选择: " choice
 
