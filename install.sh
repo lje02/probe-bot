@@ -26,6 +26,25 @@ init_config() {
 get_ip() {
     curl -sS -4 icanhazip.com || curl -sS -4 ifconfig.me
 }
+auto_backup() {
+    local BACKUP_DIR="/root/singbox_backup"
+    mkdir -p "$BACKUP_DIR"
+    local TIME=$(date +%Y%m%d_%H%M%S)
+    local B_NAME="auto_bak_before_update_$TIME.tar.gz"
+
+    # 临时打包
+    mkdir -p "/tmp/sb_auto_bak"
+    # 备份内核
+    [[ -f "/usr/local/bin/sing-box" ]] && cp "/usr/local/bin/sing-box" "/tmp/sb_auto_bak/"
+    # 备份配置文件夹
+    [[ -d "/etc/sing-box" ]] && cp -r /etc/sing-box/* "/tmp/sb_auto_bak/"
+    
+    # 压缩并清理
+    tar -czf "$BACKUP_DIR/$B_NAME" -C "/tmp/sb_auto_bak" . >/dev/null 2>&1
+    rm -rf "/tmp/sb_auto_bak"
+
+    echo -e "${YELLOW}[自动快照] 更新前已备份当前内核与配置至: $B_NAME${PLAIN}"
+}
 
 show_status() {
     if systemctl is-active --quiet sing-box; then
@@ -391,6 +410,9 @@ chain_proxy() {
 
 # --- 七、八、九：系统维护 ---
 update_all() {
+    auto_backup
+    echo -e "${CYAN}正在检查新版本...${PLAIN}"
+}
     echo "1. 更新脚本 | 2. 更新内核"
     read -p "选择: " uc
     if [ "$uc" == "1" ]; then
