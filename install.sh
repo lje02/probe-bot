@@ -289,7 +289,7 @@ add_node() {
                 KEY_PATH="/etc/sing-box/hy2.key"
                 openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
                     -keyout "$KEY_PATH" -out "$CERT_PATH" \
-                    -subj "/CN=google.com" -days 3650 2>/dev/null
+                    -subj "/CN=amazon.com" -days 3650 2>/dev/null
                 IS_INSECURE="1"
             fi
 
@@ -309,6 +309,11 @@ add_node() {
 
             echo -e "${GREEN}Hysteria2 配置成功！${PLAIN}"
             echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE#Hy2_$PORT"
+            if [[ "$IS_INSECURE" == "0" ]]; then
+                echo -e "${CYAN}✔ 已启用真证书，客户端可关闭 '允许不安全连接' (Insecure) 以增强安全性。${PLAIN}"
+            else
+                echo -e "${YELLOW}! 使用自签名证书，客户端必须开启 '允许不安全连接' (Insecure) 才能连接。${PLAIN}"
+            fi
             ;;
         4)
             read -p "端口: " PORT
