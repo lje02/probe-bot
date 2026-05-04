@@ -131,7 +131,7 @@ add_node() {
 
     IP=$(get_ip)
     case $choice in
-        1)
+       1)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
             KEYS=$($SB_BIN generate reality-keypair)
             PRIVATE=$(echo "$KEYS" | awk -F': ' '/Private/ {print $2}' | tr -d '[:space:]')
@@ -139,8 +139,8 @@ add_node() {
             SHORT_ID=$(openssl rand -hex 8)
             
             read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
-            echo -e "推荐 SNI: www.microsoft.com, www.icloud.com"
-            read -p "SNI (默认 www.amazon.com): " SNI; SNI=${SNI:-"www.amazon.com"}
+            # 美西推荐使用微软或雅虎，握手更顺滑
+            read -p "SNI (默认 www.microsoft.com): " SNI; SNI=${SNI:-"www.microsoft.com"}
 
             jq --arg port "$PORT" \
                --arg uuid "$UUID" \
@@ -154,8 +154,7 @@ add_node() {
                     "listen_port": ($port|tonumber),
                     "sniff": {
                         "enabled": true,
-                        "dest_override": ["http", "tls", "quic"],
-                        "metadata_only": false
+                        "dest_override": ["http", "tls", "quic"]
                     },
                     "domain_strategy": "prefer_ipv4",
                     "users": [{
@@ -178,7 +177,9 @@ add_node() {
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
             echo -e "${GREEN}VLESS-Reality 配置成功！${PLAIN}"
-            echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality-New${PLAIN}"
+            echo -e "${YELLOW}Public Key: ${CYAN}$PUBLIC${PLAIN}"
+            echo -e "${GREEN}节点链接:${PLAIN}"
+            echo "vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality"
             ;;
         2)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
@@ -535,7 +536,7 @@ while true; do
     echo "6. 备份 / 还原"
     echo "7. 开启 BBR 网络加速"
     echo "77. 卸载"
-    echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m" # 绿色加粗，很醒目
+    echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m" # 绿色加粗，很醒目
     echo "0. 退出"
     read -p "选择 [0-7]: " num
     case "$num" in
@@ -584,3 +585,4 @@ while true; do
     echo ""
     read -p "按回车键返回主菜单..."
 done
+
