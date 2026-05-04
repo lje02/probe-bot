@@ -26,6 +26,31 @@ init_config() {
 get_ip() {
     curl -sS -4 icanhazip.com || curl -sS -4 ifconfig.me
 }
+# --- BBR 开启脚本 ---
+enable_bbr() {
+    echo -e "${YELLOW}正在检查 BBR 状态...${PLAIN}"
+    # 检查内核版本是否支持 (需 > 4.9)
+    local kernel_version=$(uname -r | cut -d- -f1)
+    if [[ $(echo -e "4.9\n$kernel_version" | sort -V | head -n1) == "4.9" ]]; then
+        # 检查是否已启用
+        if lsmod | grep -q bbr; then
+            echo -e "${GREEN}BBR 已经处于运行状态。${PLAIN}"
+        else
+            echo -e "${CYAN}正在开启 BBR...${PLAIN}"
+            echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+            echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+            sysctl -p >/dev/null 2>&1
+            if lsmod | grep -q bbr; then
+                echo -e "${GREEN}BBR 成功开启！${PLAIN}"
+            else
+                echo -e "${RED}BBR 开启失败，请检查内核支持情况。${PLAIN}"
+            fi
+        fi
+    else
+        echo -e "${RED}内核版本过低 ($kernel_version)，请先升级内核以支持 BBR。${PLAIN}"
+    fi
+}
+
 auto_backup() {
     local BACKUP_DIR="/root/singbox_backup"
     mkdir -p "$BACKUP_DIR"
