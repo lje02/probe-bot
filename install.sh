@@ -381,9 +381,19 @@ manage_configs() {
                 vless)
                     local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
                     local SNI=$(echo "$CONF" | jq -r '.tls.server_name')
-                    local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0]')
-                    echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=这里需填写你的公钥&sid=$SID&type=tcp&flow=xtls-rprx-vision#VLESS_$PORT${PLAIN}"
-                    echo -e "${RED}(提示: VLESS Reality 的 Public Key 仅在创建时显示，不保存在服务器配置文件中)${PLAIN}"
+                    local T_TYPE=$(echo "$CONF" | jq -r '.transport.type // "tcp"')
+                    
+                    if [[ "$T_TYPE" == "ws" ]]; then
+                        # Cloudflare WS 模式链接
+                        local WSPATH=$(echo "$CONF" | jq -r '.transport.path')
+                        echo -e "${BLUE}vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#CF_VLESS_$PORT${PLAIN}"
+                        echo -e "${YELLOW}(提示: 此为 WebSocket 节点，建议配合 Cloudflare 使用)${PLAIN}"
+                    else
+                        # 原有的 Reality 模式链接
+                        local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0]')
+                        echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=这里填写你的公钥&sid=$SID&type=tcp&flow=xtls-rprx-vision#VLESS_Reality_$PORT${PLAIN}"
+                        echo -e "${RED}(提示: Reality 公钥不保存在本地，请检查创建时的记录)${PLAIN}"
+                    fi
                     ;;
                 tuic)
                     local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
