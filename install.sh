@@ -323,7 +323,7 @@ while true; do
         2) add_node ;;
         3) manage_configs ;;
         4) chain_proxy ;;
-        5) update_all ;
+        5) update_all ;;
         6) backup_restore ;;
         7)
             echo -e "${RED}！！！警告：即将卸载 sing-box 并删除所有配置！！！${PLAIN}"
