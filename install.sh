@@ -147,7 +147,7 @@ add_node() {
                --arg sid "$SHORT_ID" \
                '.inbounds += [{
                     "type":"vless",
-                    "tag":("vless-reality-" + $port),
+                    "tag":("reality" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],
@@ -182,7 +182,7 @@ add_node() {
                --arg pass "$PASS" \
                '.inbounds += [{
                     "type":"tuic",
-                    "tag":("tuic-in-" + $port),
+                    "tag":("tuic" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"uuid":$uuid,"password":$pass}],
@@ -211,7 +211,7 @@ add_node() {
                --arg pass "$PASS" \
                '.inbounds += [{
                     "type":"hysteria2",
-                    "tag":("hy2-in-" + $port),
+                    "tag":("hy2" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"password":$pass}],
@@ -235,7 +235,7 @@ add_node() {
                --arg method "$METHOD" \
                '.inbounds += [{
                     "type":"shadowsocks",
-                    "tag":("ss-in-" + $port),
+                    "tag":("ss" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "method":$method,
@@ -256,7 +256,7 @@ add_node() {
                --arg pass "$PASS" \
                '.inbounds += [{
                     "type":"socks",
-                    "tag":("socks-in-" + $port),
+                    "tag":("socks" + $port),
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"username":$user,"password":$pass}]
