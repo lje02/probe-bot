@@ -7,6 +7,9 @@
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[1;36m'
+BLUE='\033[1;34m'
+WHITE='\033[1;37m'
 PLAIN='\033[0m'     
 
 CONFIG_FILE="/etc/sing-box/config.json"
@@ -19,13 +22,15 @@ UPDATE_URL="https://raw.githubusercontent.com/lje02/sing/main/install.sh"
 init_config() {
     if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
         mkdir -p /etc/sing-box
-        echo '{"log":{"level":"info"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}]}' > "$CONFIG_FILE"
+        # [修复] 补全 route 结构，防止后续 jq 合并 null 时报错
+        echo '{"log":{"level":"info"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[]}}' > "$CONFIG_FILE"
     fi
 }
 
 get_ip() {
     curl -sS -4 icanhazip.com || curl -sS -4 ifconfig.me
 }
+
 # --- BBR 开启脚本 ---
 enable_bbr() {
     echo -e "${YELLOW}正在检查 BBR 状态...${PLAIN}"
@@ -171,8 +176,8 @@ add_node() {
             read -p "端口: " PORT
             read -p "密码: " PASS
 
-            # 增加 2>/dev/null 屏蔽冗余的证书生成提示信息
-            openssl req -x509 -nodes -newkey rsa:2048 \
+            # [优化] 使用 ECC 证书替换 RSA，性能更好
+            openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
                 -keyout /etc/sing-box/tuic.key \
                 -out /etc/sing-box/tuic.crt \
                 -subj "/CN=apple.com" -days 3650 2>/dev/null
@@ -194,18 +199,18 @@ add_node() {
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
-            echo -e "${GREEN}TUIC5 配置成功 (自签名证书)${PLAIN}"
-            # 补齐了 sni, alpn 并且修正了 allow_insecure 参数，提升多客户端兼容性
+            echo -e "${GREEN}TUIC5 配置成功 (自签名 ECC 证书)${PLAIN}"
             echo "节点链接: tuic://$UUID:$PASS@$IP:$PORT?sni=apple.com&alpn=h3&allow_insecure=1&congestion_control=bbr#TUIC5"
             ;;
         3)
             read -p "端口: " PORT
             read -p "密码: " PASS
 
-            openssl req -x509 -nodes -newkey rsa:2048 \
+            # [优化] 使用 ECC 证书替换 RSA，性能更好
+            openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
                 -keyout /etc/sing-box/hy2.key \
                 -out /etc/sing-box/hy2.crt \
-                -subj "/CN=google.com" -days 3650
+                -subj "/CN=google.com" -days 3650 2>/dev/null
 
             jq --arg port "$PORT" \
                --arg pass "$PASS" \
@@ -222,7 +227,7 @@ add_node() {
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
-            echo -e "${GREEN}Hysteria2 配置成功${PLAIN}"
+            echo -e "${GREEN}Hysteria2 配置成功 (自签名 ECC 证书)${PLAIN}"
             echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=1#Hy2"
             ;;
         4)
@@ -245,6 +250,8 @@ add_node() {
             SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
             echo -e "${GREEN}Shadowsocks 链接:${PLAIN}"
             echo "ss://$SS_BASE64@$IP:$PORT#SS"
+            # [优化] 增加兼容性提示
+            echo -e "${YELLOW}(提示: SS-2022 协议需要较新的客户端支持，如 sing-box, Clash Meta/Mihomo 等)${PLAIN}"
             ;;
         5)
             read -p "端口: " PORT
@@ -273,14 +280,12 @@ add_node() {
             ;;
     esac
     
-    # 只有执行了上面的 0 之前逻辑，才会跑到这一步重启服务
     systemctl restart sing-box
 }
 
 # --- 三、四、五：配置管理 ---
 manage_configs() {
     echo -e "${YELLOW}--- 节点列表 ---${PLAIN}"
-    # 列出所有入站，带上序号
     jq -r '.inbounds[] | "Tag: \(.tag) | Type: \(.type) | Port: \(.listen_port)"' "$CONFIG_FILE" | cat -n
     read -p "请选择序号 (q退出): " idx
     [[ "$idx" == "q" ]] && return
@@ -289,7 +294,6 @@ manage_configs() {
     read -p "选择操作: " op
     case $op in
         1)
-            # 获取选中的入站配置内容
             local CONF=$(jq -c ".inbounds[$(($idx-1))]" "$CONFIG_FILE")
             local TYPE=$(echo "$CONF" | jq -r .type)
             local PORT=$(echo "$CONF" | jq -r .listen_port)
@@ -305,7 +309,6 @@ manage_configs() {
                     local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
                     local SNI=$(echo "$CONF" | jq -r '.tls.server_name')
                     local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0]')
-                    # 注意：Reality 的公钥 (pbk) 通常不存在服务器 config 里，这里只能提示用户手动填写或从创建记录中找
                     echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=这里需填写你的公钥&sid=$SID&type=tcp&flow=xtls-rprx-vision#VLESS_$PORT${PLAIN}"
                     echo -e "${RED}(提示: VLESS Reality 的 Public Key 仅在创建时显示，不保存在服务器配置文件中)${PLAIN}"
                     ;;
@@ -382,13 +385,11 @@ chain_proxy() {
             local OUT_JSON=""
 
             if [[ "$hop_type" == "1" ]]; then
-                # SS 配置
                 read -p "SS加密方式 (默认 aes-128-gcm): " R_METHOD
                 [[ -z "$R_METHOD" ]] && R_METHOD="aes-128-gcm"
                 read -p "密码: " R_PASS
                 OUT_JSON="{ \"type\": \"shadowsocks\", \"tag\": \"$OUT_TAG\", \"server\": \"$R_ADDR\", \"server_port\": $R_PORT, \"method\": \"$R_METHOD\", \"password\": \"$R_PASS\" }"
             else
-                # Socks5 配置
                 read -p "用户名 (可选): " R_USER
                 read -p "密码 (可选): " R_PASS
                 OUT_JSON="{ \"type\": \"socks\", \"tag\": \"$OUT_TAG\", \"server\": \"$R_ADDR\", \"server_port\": $R_PORT, \"version\": \"5\" }"
@@ -400,9 +401,9 @@ chain_proxy() {
             # 3. 写入 Outbound
             jq --argjson obj "$OUT_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
-            # 4. 写入 Route Rule (置顶)
+            # 4. 写入 Route Rule (置顶)，使用 (.route.rules // []) 防御 null 错误
             jq --arg in_tag "$LOCAL_TAG" --arg out_tag "$OUT_TAG" \
-               '.route.rules = [{ "inbound": [$in_tag], "outbound": $out_tag }] + .route.rules' \
+               '.route.rules = [{ "inbound": [$in_tag], "outbound": $out_tag }] + (.route.rules // [])' \
                "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
             systemctl restart sing-box
@@ -415,15 +416,17 @@ chain_proxy() {
             ;;
 
         2)
-            # 删除逻辑保持不变
             echo -e "${YELLOW}当前链式规则列表:${PLAIN}"
             local RULES=$(jq -r '.route.rules[] | select(.outbound | startswith("chain-out-")) | .inbound[0]' "$CONFIG_FILE")
             if [[ -z "$RULES" ]]; then echo "无配置"; return; fi
             echo "$RULES" | cat -n
             read -p "删除序号: " del_idx
+            
             local DEL_IN_TAG=$(echo "$RULES" | sed -n "${del_idx}p")
-            local DEL_OUT_TAG="chain-out-${DEL_IN_TAG##*-}"
+            # [修复] 放弃脆弱的字符串截取，直接通过 inbound 查找对应的 outbound 标签
+            local DEL_OUT_TAG=$(jq -r --arg itag "$DEL_IN_TAG" '.route.rules[] | select(.inbound[0] == $itag) | .outbound' "$CONFIG_FILE")
 
+            # 执行删除
             jq --arg itag "$DEL_IN_TAG" 'del(.route.rules[] | select(.inbound[0] == $itag))' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             jq --arg otag "$DEL_OUT_TAG" 'del(.outbounds[] | select(.tag == $otag))' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             
@@ -466,12 +469,10 @@ backup_restore() {
             local B_NAME="singbox_full_$TIME.tar.gz"
             
             echo -e "${YELLOW}正在打包内核与配置...${PLAIN}"
-            # 创建临时目录
             mkdir -p "/tmp/sb_bak"
             cp /usr/local/bin/sing-box "/tmp/sb_bak/"
             cp -r /etc/sing-box "/tmp/sb_bak/"
             
-            # 打包
             tar -czf "$BACKUP_DIR/$B_NAME" -C "/tmp/sb_bak" .
             rm -rf "/tmp/sb_bak"
             
@@ -489,12 +490,11 @@ backup_restore() {
                 read -p "确定还原 $R_FILE 吗？(y/n): " confirm
                 if [[ "$confirm" == "y" ]]; then
                     systemctl stop sing-box
-                    # 解压还原
                     tar -xzf "$BACKUP_DIR/$R_FILE" -C /tmp/
                     cp /tmp/sing-box /usr/local/bin/sing-box
                     chmod +x /usr/local/bin/sing-box
                     cp -r /tmp/sing-box/* /etc/sing-box/
-                    rm -rf /tmp/sing-box /tmp/config.json # 清理临时文件
+                    rm -rf /tmp/sing-box /tmp/config.json
                     
                     systemctl restart sing-box
                     echo -e "${GREEN}✔ 还原成功并已重启服务！${PLAIN}"
@@ -521,7 +521,7 @@ while true; do
     echo "6. 备份 / 还原"
     echo "7. 开启 BBR 网络加速"
     echo "77. 卸载"
-    echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m" # 绿色加粗，很醒目
+    echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
     read -p "选择 [0-7]: " num
     case "$num" in
@@ -548,7 +548,7 @@ while true; do
                 echo -e "${YELLOW}已取消卸载。${PLAIN}"
             fi
             ;;
-    88)
+        88)
             echo -e "${YELLOW}正在尝试重启 sing-box 服务...${PLAIN}"
             systemctl restart sing-box
             sleep 1
@@ -570,4 +570,3 @@ while true; do
     echo ""
     read -p "按回车键返回主菜单..."
 done
-
