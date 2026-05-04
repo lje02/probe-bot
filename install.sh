@@ -219,8 +219,16 @@ add_node() {
 
             echo -e "${GREEN}Socks5 添加成功。${PLAIN}"
             ;;
-        *) return ;;
+        0) 
+            return
+            ;;
+        *) 
+            echo -e "${RED}输入错误，返回主菜单${PLAIN}"
+            return 
+            ;;
     esac
+    
+    # 只有执行了上面的 0 之前逻辑，才会跑到这一步重启服务
     systemctl restart sing-box
 }
 
