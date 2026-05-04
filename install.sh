@@ -333,22 +333,13 @@ while true; do
             echo -e "${RED}！！！警告：即将卸载 sing-box 并删除所有配置！！！${PLAIN}"
             read -p "确定要继续吗？(y/n): " confirm
             if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                # 1. 停止并禁用服务
                 systemctl stop sing-box >/dev/null 2>&1
                 systemctl disable sing-box >/dev/null 2>&1
-                
-                # 2. 删除二进制文件和快捷方式
-                rm -f /usr/local/bin/sing-box
-                rm -f /usr/local/bin/ssb
-                
-                # 3. 删除配置文件和系统服务文件
+                rm -f /usr/local/bin/sing-box /usr/local/bin/ssb
                 rm -rf /etc/sing-box
                 rm -f /etc/systemd/system/sing-box.service
-                
-                # 4. 重新加载系统服务状态
                 systemctl daemon-reload
-                
-                echo -e "${GREEN}卸载完成！所有相关文件已清理。${PLAIN}"
+                echo -e "${GREEN}卸载完成！${PLAIN}"
                 exit 0
             else
                 echo -e "${YELLOW}已取消卸载。${PLAIN}"
@@ -362,7 +353,7 @@ while true; do
                 echo -e "${GREEN}✔ 重启成功！服务正常运行中。${PLAIN}"
             else
                 echo -e "${RED}✘ 重启失败！配置可能存在语法错误。${PLAIN}"
-                echo -e "${YELLOW}提示: 输入 'journalctl -u sing-box --no-pager -n 10' 查看报错原因。${PLAIN}"
+                echo -e "${YELLOW}提示: 请运行 'journalctl -u sing-box --no-pager -n 10' 检查。${PLAIN}"
             fi
             ;;
         0) 
