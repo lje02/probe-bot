@@ -26,6 +26,48 @@ init_config() {
         echo '{"log":{"level":"info"},"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"rules":[]}}' > "$CONFIG_FILE"
     fi
 }
+# --- SSL 证书管理 (ACME) ---
+apply_cert() {
+    echo -e "${YELLOW}--- ACME 域名证书申请 ---${PLAIN}"
+    read -p "请输入解析到本机的域名: " domain
+    if [[ -z "$domain" ]]; then
+        echo -e "${RED}错误: 域名不能为空${PLAIN}"
+        return
+    fi
+
+    # 1. 安装基础依赖 (socat 用于 standalone 模式)
+    echo -e "${CYAN}正在安装 acme.sh 依赖...${PLAIN}"
+    apt update && apt install -y socat cron
+    
+    # 2. 安装 acme.sh (如果未安装)
+    if [ ! -f ~/.acme.sh/acme.sh ]; then
+        curl https://get.acme.sh | sh -s email=admin@$domain
+        source ~/.bashrc
+    fi
+
+    # 3. 申请证书 (必须临时停止 sing-box 以释放 80 端口)
+    echo -e "${YELLOW}正在尝试申请证书，请确保 80 端口未被占用且已在防火墙开启...${PLAIN}"
+    systemctl stop sing-box 2>/dev/null
+    
+    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --server letsencrypt
+    
+    if [ $? -eq 0 ]; then
+        # 4. 安装证书到指定目录
+        mkdir -p /etc/sing-box/certs
+        ~/.acme.sh/acme.sh --install-cert -d "$domain" \
+            --key-file /etc/sing-box/certs/server.key \
+            --fullchain-file /etc/sing-box/certs/server.crt
+        
+        echo -e "${GREEN}✔ 证书申请并安装成功！${PLAIN}"
+        echo -e "证书路径: ${BLUE}/etc/sing-box/certs/server.crt${PLAIN}"
+        echo -e "私钥路径: ${BLUE}/etc/sing-box/certs/server.key${PLAIN}"
+    else
+        echo -e "${RED}✘ 证书申请失败，请检查域名解析是否正确，或 80 端口是否被屏蔽。${PLAIN}"
+    fi
+    
+    # 恢复服务
+    systemctl start sing-box 2>/dev/null
+}
 
 get_ip() {
     curl -sS -4 icanhazip.com || curl -sS -4 ifconfig.me
@@ -520,6 +562,7 @@ while true; do
     echo "5. 更新脚本或内核"
     echo "6. 备份 / 还原"
     echo "7. 开启 BBR 网络加速"
+    echo "8. 申请 SSL 域名证书 (ACME)"
     echo "77. 卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -532,6 +575,7 @@ while true; do
         5) update_all ;;
         6) backup_restore ;;
         7) enable_bbr ;;
+        8) apply_cert ;;
         77)
             echo -e "${RED}！！！警告：即将卸载 sing-box 并删除所有配置！！！${PLAIN}"
             read -p "确定要继续吗？(y/n): " confirm
