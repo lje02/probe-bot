@@ -4,10 +4,14 @@
 # sing-box 一键脚本 (快捷方式: ssb)
 # ==========================================
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-PLAIN='\033[0m'
+RED='\033[1;31m'    
+GREEN='\033[1;32m'  
+YELLOW='\033[1;33m' 
+BLUE='\033[1;34m'   
+PURPLE='\033[1;35m' 
+CYAN='\033[1;36m'   
+WHITE='\033[1;37m'  
+PLAIN='\033[0m'     
 
 CONFIG_FILE="/etc/sing-box/config.json"
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
