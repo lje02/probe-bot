@@ -248,15 +248,32 @@ add_node() {
         3)
             read -p "端口: " PORT
             read -p "密码: " PASS
+            
+            echo -e "选择证书类型:"
+            echo "1. 使用自签名证书 (无需域名/快速)"
+            echo "2. 使用 ACME 真证书 (需先执行菜单5申请)"
+            read -p "请选择 [1-2]: " cert_type
 
-            # [优化] 使用 ECC 证书替换 RSA，性能更好
-            openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
-                -keyout /etc/sing-box/hy2.key \
-                -out /etc/sing-box/hy2.crt \
-                -subj "/CN=google.com" -days 3650 2>/dev/null
+            if [[ "$cert_type" == "2" ]]; then
+                # 使用真证书路径
+                CERT_PATH="/etc/sing-box/certs/server.crt"
+                KEY_PATH="/etc/sing-box/certs/server.key"
+                if [[ ! -f "$CERT_PATH" ]]; then
+                    echo -e "${RED}错误: 未检测到真证书，请先执行菜单5申请！${PLAIN}"
+                    return
+                fi
+                IS_INSECURE="0" # 建议链接中关闭 insecure
+            else
+                # 生成自签名证书 (你原有的逻辑)
+                CERT_PATH="/etc/sing-box/hy2.crt"
+                KEY_PATH="/etc/sing-box/hy2.key"
+                openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
+                    -keyout "$KEY_PATH" -out "$CERT_PATH" \
+                    -subj "/CN=google.com" -days 3650 2>/dev/null
+                IS_INSECURE="1"
+            fi
 
-            jq --arg port "$PORT" \
-               --arg pass "$PASS" \
+            jq --arg port "$PORT" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
                '.inbounds += [{
                     "type":"hysteria2",
                     "tag":("hy2" + $port),
@@ -265,13 +282,13 @@ add_node() {
                     "users":[{"password":$pass}],
                     "tls":{
                         "enabled":true,
-                        "certificate_path":"/etc/sing-box/hy2.crt",
-                        "key_path":"/etc/sing-box/hy2.key"
+                        "certificate_path":$cert,
+                        "key_path":$key
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
-            echo -e "${GREEN}Hysteria2 配置成功 (自签名 ECC 证书)${PLAIN}"
-            echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=1#Hy2"
+            echo -e "${GREEN}Hysteria2 配置成功！${PLAIN}"
+            echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE#Hy2_$PORT"
             ;;
         4)
             read -p "端口: " PORT
