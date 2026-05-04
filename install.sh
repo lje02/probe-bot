@@ -435,7 +435,17 @@ manage_configs() {
                 tuic)
                     local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
                     local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                    echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?sni=apple.com&alpn=h3&allow_insecure=1&congestion_control=bbr#TUIC5_$PORT${PLAIN}"
+                    local CERT_FILE=$(echo "$CONF" | jq -r '.tls.certificate_path')
+                    
+                    local ALLOW_INSECURE="1"
+                    local SNI_NAME="apple.com"
+                    
+                    if [[ "$CERT_FILE" == "/etc/sing-box/certs/server.crt" ]]; then
+                        ALLOW_INSECURE="0"
+                        SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_FILE" | sed -n 's/.*CN = //p')
+                    fi
+                    
+                    echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INSECURE&congestion_control=bbr#TUIC5_$PORT${PLAIN}"
                     ;;
                 hysteria2)
                     local CERT_FILE=$(echo "$CONF" | jq -r '.tls.certificate_path')
