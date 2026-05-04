@@ -218,16 +218,35 @@ add_node() {
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
             read -p "端口: " PORT
             read -p "密码: " PASS
+            
+            echo -e "选择证书类型:"
+            echo "1. 使用自签名证书 (无需域名/快速)"
+            echo "2. 使用 ACME 真证书 (需先执行菜单5申请)"
+            read -p "请选择 [1-2]: " cert_type
 
-            # [优化] 使用 ECC 证书替换 RSA，性能更好
-            openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
-                -keyout /etc/sing-box/tuic.key \
-                -out /etc/sing-box/tuic.crt \
-                -subj "/CN=apple.com" -days 3650 2>/dev/null
+            if [[ "$cert_type" == "2" ]]; then
+                # 使用 ACME 真证书路径
+                CERT_PATH="/etc/sing-box/certs/server.crt"
+                KEY_PATH="/etc/sing-box/certs/server.key"
+                if [[ ! -f "$CERT_PATH" ]]; then
+                    echo -e "${RED}错误: 未检测到真证书，请先执行菜单5申请！${PLAIN}"
+                    return
+                fi
+                ALLOW_INSECURE="0"
+                SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_PATH" | sed -n 's/.*CN = //p')
+            else
+                # 生成自签名 ECC 证书 (保持原有优化逻辑)
+                CERT_PATH="/etc/sing-box/tuic.crt"
+                KEY_PATH="/etc/sing-box/tuic.key"
+                openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
+                    -keyout "$KEY_PATH" -out "$CERT_PATH" \
+                    -subj "/CN=apple.com" -days 3650 2>/dev/null
+                ALLOW_INSECURE="1"
+                SNI_NAME="apple.com"
+            fi
 
-            jq --arg port "$PORT" \
-               --arg uuid "$UUID" \
-               --arg pass "$PASS" \
+            jq --arg port "$PORT" --arg uuid "$UUID" --arg pass "$PASS" \
+               --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
                '.inbounds += [{
                     "type":"tuic",
                     "tag":("tuic" + $port),
@@ -236,14 +255,15 @@ add_node() {
                     "users":[{"uuid":$uuid,"password":$pass}],
                     "tls":{
                         "enabled":true,
-                        "certificate_path":"/etc/sing-box/tuic.crt",
-                        "key_path":"/etc/sing-box/tuic.key",
+                        "certificate_path":$cert,
+                        "key_path":$key,
                         "alpn": ["h3"]
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
-            echo -e "${GREEN}TUIC5 配置成功 (自签名 ECC 证书)${PLAIN}"
-            echo "节点链接: tuic://$UUID:$PASS@$IP:$PORT?sni=apple.com&alpn=h3&allow_insecure=1&congestion_control=bbr#TUIC5"
+            echo -e "${GREEN}TUIC5 配置成功！${PLAIN}"
+            echo "节点链接: tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INSECURE&congestion_control=bbr#TUIC5_$PORT"
+            [[ "$ALLOW_INSECURE" == "0" ]] && echo -e "${CYAN}已启用真证书，客户端可关闭 '允许不安全连接'。${PLAIN}"
             ;;
         3)
             read -p "端口: " PORT
@@ -264,7 +284,7 @@ add_node() {
                 fi
                 IS_INSECURE="0" # 建议链接中关闭 insecure
             else
-                # 生成自签名证书 (你原有的逻辑)
+                # 生成自签名证书 
                 CERT_PATH="/etc/sing-box/hy2.crt"
                 KEY_PATH="/etc/sing-box/hy2.key"
                 openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
