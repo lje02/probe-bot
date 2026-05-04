@@ -139,9 +139,8 @@ add_node() {
             SHORT_ID=$(openssl rand -hex 8)
             
             read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
-            # 推荐域名
             echo -e "推荐 SNI: www.microsoft.com, www.icloud.com"
-            read -p "SNI (默认 www.microsoft.com): " SNI; SNI=${SNI:-"www.microsoft.com"}
+            read -p "SNI (默认 www.amazon.com): " SNI; SNI=${SNI:-"www.amazon.com"}
 
             jq --arg port "$PORT" \
                --arg uuid "$UUID" \
@@ -153,9 +152,11 @@ add_node() {
                     "tag": ("vless-reality-" + $port),
                     "listen": "::",
                     "listen_port": ($port|tonumber),
-                    "sniff": true,
-                    "sniff_override_destination": true,
-                    "udp_fragment": true,
+                    "sniff": {
+                        "enabled": true,
+                        "dest_override": ["http", "tls", "quic"],
+                        "metadata_only": false
+                    },
                     "domain_strategy": "prefer_ipv4",
                     "users": [{
                         "uuid": $uuid,
@@ -177,8 +178,7 @@ add_node() {
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
             echo -e "${GREEN}VLESS-Reality 配置成功！${PLAIN}"
-            echo -e "${YELLOW}Public Key (pbk): ${CYAN}$PUBLIC${PLAIN} (请务必保存，管理菜单里找不到它)"
-            echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality-US-West${PLAIN}"
+            echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality-New${PLAIN}"
             ;;
         2)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
