@@ -327,28 +327,52 @@ while true; do
         2) add_node ;;
         3) manage_configs ;;
         4) chain_proxy ;;
-        5) update_all ;;
+        5) update_all ;
         6) backup_restore ;;
         7)
+            echo -e "${RED}！！！警告：即将卸载 sing-box 并删除所有配置！！！${PLAIN}"
+            read -p "确定要继续吗？(y/n): " confirm
+            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+                # 1. 停止并禁用服务
+                systemctl stop sing-box >/dev/null 2>&1
+                systemctl disable sing-box >/dev/null 2>&1
+                
+                # 2. 删除二进制文件和快捷方式
+                rm -f /usr/local/bin/sing-box
+                rm -f /usr/local/bin/ssb
+                
+                # 3. 删除配置文件和系统服务文件
+                rm -rf /etc/sing-box
+                rm -f /etc/systemd/system/sing-box.service
+                
+                # 4. 重新加载系统服务状态
+                systemctl daemon-reload
+                
+                echo -e "${GREEN}卸载完成！所有相关文件已清理。${PLAIN}"
+                exit 0
+            else
+                echo -e "${YELLOW}已取消卸载。${PLAIN}"
+            fi
+            ;;
         8)
             echo -e "${YELLOW}正在尝试重启 sing-box 服务...${PLAIN}"
             systemctl restart sing-box
-            sleep 1 # 等待一秒让内核反应一下
+            sleep 1
             if systemctl is-active --quiet sing-box; then
-                echo -e "${GREEN}✔ 重启成功！服务正在运行。${PLAIN}"
+                echo -e "${GREEN}✔ 重启成功！服务正常运行中。${PLAIN}"
             else
-                echo -e "${RED}✘ 重启失败！${PLAIN}"
-                echo -e "${YELLOW}提示: 请尝试运行 'journalctl -u sing-box --no-pager -n 20' 查看错误日志。${PLAIN}"
+                echo -e "${RED}✘ 重启失败！配置可能存在语法错误。${PLAIN}"
+                echo -e "${YELLOW}提示: 输入 'journalctl -u sing-box --no-pager -n 10' 查看报错原因。${PLAIN}"
             fi
             ;;
-
-            systemctl stop sing-box
-            systemctl disable sing-box
-            rm -rf /etc/sing-box /usr/local/bin/sing-box /usr/local/bin/ssb /etc/systemd/system/sing-box.service
-            echo "已卸载"
-            exit 0
+        0) 
+            echo -e "${GREEN}感谢使用，再见！${PLAIN}"
+            exit 0 
             ;;
-        0) exit 0 ;;
+        *) 
+            echo -e "${RED}请输入正确的数字选择 [0-8]${PLAIN}" 
+            ;;
     esac
-    read -p "按回车继续..."
+    echo ""
+    read -p "按回车键返回主菜单..."
 done
