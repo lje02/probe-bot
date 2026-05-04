@@ -341,7 +341,7 @@ while true; do
                 echo -e "${YELLOW}已取消卸载。${PLAIN}"
             fi
             ;;
-        8)
+    8)
             echo -e "${YELLOW}正在尝试重启 sing-box 服务...${PLAIN}"
             systemctl restart sing-box
             sleep 1
