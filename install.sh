@@ -412,7 +412,6 @@ chain_proxy() {
 update_all() {
     auto_backup
     echo -e "${CYAN}正在检查新版本...${PLAIN}"
-}
     echo "1. 更新脚本 | 2. 更新内核"
     read -p "选择: " uc
     if [ "$uc" == "1" ]; then
