@@ -418,8 +418,10 @@ manage_configs() {
                     echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?sni=apple.com&alpn=h3&allow_insecure=1&congestion_control=bbr#TUIC5_$PORT${PLAIN}"
                     ;;
                 hysteria2)
-                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                    echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=1&sni=google.com#Hy2_$PORT${PLAIN}"
+                    local CERT_FILE=$(echo "$CONF" | jq -r '.tls.certificate_path')
+                    local INSECURE_VAL="1"
+                    [[ "$CERT_FILE" == "/etc/sing-box/certs/server.crt" ]] && INSECURE_VAL="0"
+                    echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=$INSECURE_VAL#Hy2_$PORT${PLAIN}"
                     ;;
                 shadowsocks)
                     local METHOD=$(echo "$CONF" | jq -r .method)
