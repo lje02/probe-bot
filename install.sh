@@ -361,11 +361,12 @@ chain_proxy() {
                "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
             systemctl restart sing-box
-            echo -e "${GREEN}链式配置成功！节点 [$LOCAL_TAG] -> [$R_ADDR]${PLAIN}"
             
-            # 5. 打印客户端链接
-            echo -e "${YELLOW}请使用以下信息配置客户端 (连接到此中转机):${PLAIN}"
-            manage_configs_show_link "$idx" # 调用展示链接的逻辑（假设你已提取为函数）
+            echo -e "\n${YELLOW}===============================================${PLAIN}"
+            echo -e "${GREEN} ✔ 链式转发已成功开启！${PLAIN}"
+            echo -e "${CYAN} 转发路径: [本地入站:$LOCAL_TAG] --> [远程落地:$R_ADDR]${PLAIN}"
+            echo -e "${WHITE} 提示: 客户端配置保持不变，无需重新导入。${PLAIN}"
+            echo -e "${YELLOW}===============================================${PLAIN}"
             ;;
 
         2)
