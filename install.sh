@@ -308,24 +308,84 @@ manage_configs() {
 
 # --- 六：链式代理 ---
 chain_proxy() {
-    read -p "输入外部 Socks5/SS 地址: " E_IP
-    read -p "输入外部端口: " E_PORT
+    echo -e "${YELLOW}--- 链式代理管理 (指定入站分流) ---${PLAIN}"
+    echo "1. 添加链式转发"
+    echo "2. 删除链式转发"
+    echo "0. 返回"
+    read -p "请选择: " cp_choice
 
-    jq --arg ip "$E_IP" \
-       --arg port "$E_PORT" \
-       '.outbounds += [{
-            "type":"socks",
-            "tag":"chain-out",
-            "server":$ip,
-            "server_port":($port|tonumber)
-        }]
-        | .routing.rules = [{
-            "inbound":["vless-reality","ss-in"],
-            "outbound":"chain-out"
-        }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+    case $cp_choice in
+        1)
+            # 1. 选择本地入站节点
+            echo -e "${YELLOW}请选择要进行链式转发的本地节点:${PLAIN}"
+            jq -r '.inbounds[] | "Tag: \(.tag) | Type: \(.type) | Port: \(.listen_port)"' "$CONFIG_FILE" | cat -n
+            read -p "选择序号: " idx
+            local LOCAL_CONF=$(jq -c ".inbounds[$(($idx-1))]" "$CONFIG_FILE")
+            local LOCAL_TAG=$(echo "$LOCAL_CONF" | jq -r .tag)
+            local LOCAL_PORT=$(echo "$LOCAL_CONF" | jq -r .listen_port)
 
-    systemctl restart sing-box
-    echo "链式代理配置完成"
+            # 2. 选择出站协议
+            echo -e "\n${CYAN}选择落地机 (Next Hop) 协议:${PLAIN}"
+            echo "1. Shadowsocks (SS)"
+            echo "2. Socks5"
+            read -p "选择: " hop_type
+
+            read -p "远程服务器地址: " R_ADDR
+            read -p "远程端口: " R_PORT
+            
+            local OUT_TAG="chain-out-$LOCAL_PORT"
+            local OUT_JSON=""
+
+            if [[ "$hop_type" == "1" ]]; then
+                # SS 配置
+                read -p "SS加密方式 (默认 aes-128-gcm): " R_METHOD
+                [[ -z "$R_METHOD" ]] && R_METHOD="aes-128-gcm"
+                read -p "密码: " R_PASS
+                OUT_JSON="{ \"type\": \"shadowsocks\", \"tag\": \"$OUT_TAG\", \"server\": \"$R_ADDR\", \"server_port\": $R_PORT, \"method\": \"$R_METHOD\", \"password\": \"$R_PASS\" }"
+            else
+                # Socks5 配置
+                read -p "用户名 (可选): " R_USER
+                read -p "密码 (可选): " R_PASS
+                OUT_JSON="{ \"type\": \"socks\", \"tag\": \"$OUT_TAG\", \"server\": \"$R_ADDR\", \"server_port\": $R_PORT, \"version\": \"5\" }"
+                if [[ -n "$R_USER" ]]; then
+                    OUT_JSON=$(echo "$OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + { "username": $u, "password": $p }')
+                fi
+            fi
+
+            # 3. 写入 Outbound
+            jq --argjson obj "$OUT_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+
+            # 4. 写入 Route Rule (置顶)
+            jq --arg in_tag "$LOCAL_TAG" --arg out_tag "$OUT_TAG" \
+               '.route.rules = [{ "inbound": [$in_tag], "outbound": $out_tag }] + .route.rules' \
+               "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+
+            systemctl restart sing-box
+            echo -e "${GREEN}链式配置成功！节点 [$LOCAL_TAG] -> [$R_ADDR]${PLAIN}"
+            
+            # 5. 打印客户端链接
+            echo -e "${YELLOW}请使用以下信息配置客户端 (连接到此中转机):${PLAIN}"
+            manage_configs_show_link "$idx" # 调用展示链接的逻辑（假设你已提取为函数）
+            ;;
+
+        2)
+            # 删除逻辑保持不变
+            echo -e "${YELLOW}当前链式规则列表:${PLAIN}"
+            local RULES=$(jq -r '.route.rules[] | select(.outbound | startswith("chain-out-")) | .inbound[0]' "$CONFIG_FILE")
+            if [[ -z "$RULES" ]]; then echo "无配置"; return; fi
+            echo "$RULES" | cat -n
+            read -p "删除序号: " del_idx
+            local DEL_IN_TAG=$(echo "$RULES" | sed -n "${del_idx}p")
+            local DEL_OUT_TAG="chain-out-${DEL_IN_TAG##*-}"
+
+            jq --arg itag "$DEL_IN_TAG" 'del(.route.rules[] | select(.inbound[0] == $itag))' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            jq --arg otag "$DEL_OUT_TAG" 'del(.outbounds[] | select(.tag == $otag))' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            
+            systemctl restart sing-box
+            echo -e "${GREEN}链式规则已清除。${PLAIN}"
+            ;;
+        0) return ;;
+    esac
 }
 
 # --- 七、八、九：系统维护 ---
