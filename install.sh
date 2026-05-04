@@ -295,7 +295,7 @@ add_node() {
             # [优化] 增加兼容性提示
             echo -e "${YELLOW}(提示: SS-2022 协议需要较新的客户端支持，如 sing-box, Clash Meta/Mihomo 等)${PLAIN}"
             ;;
-        6)
+        5)
             read -p "请输入证书对应的域名: " DOMAIN
             if [ ! -f "/etc/sing-box/certs/server.crt" ]; then
                 echo -e "${RED}错误: 未检测到 SSL 证书，请先执行菜单 5 申请证书。${PLAIN}"
@@ -325,7 +325,7 @@ add_node() {
             echo -e "${BLUE}链接: vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&path=$WSPATH#CF_VLESS_${PORT}${PLAIN}"
             echo -e "${YELLOW}提示: 在 Cloudflare 后台开启“小云朵”即可隐藏真实 IP。${PLAIN}"
             ;;
-        5)
+        6)
             read -p "端口: " PORT
             read -p "用户名: " USER
             read -p "密码: " PASS
