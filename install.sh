@@ -404,16 +404,60 @@ update_all() {
 }
 
 backup_restore() {
-    echo "1. 备份 | 2. 还原"
-    read -p "选择: " br
-    if [[ "$br" == "1" ]]; then
-        tar -czf /root/sb_bak.tar.gz /etc/sing-box/
-        echo "备份成功: /root/sb_bak.tar.gz"
-    elif [[ "$br" == "2" ]]; then
-        tar -xzf /root/sb_bak.tar.gz -C /
-        systemctl restart sing-box
-        echo "还原成功"
-    fi
+    local BACKUP_DIR="/root/singbox_backup"
+    mkdir -p "$BACKUP_DIR"
+
+    echo -e "${YELLOW}--- 备份与还原 (含内核) ---${PLAIN}"
+    echo "1. 立即备份 (内核 + 配置)"
+    echo "2. 还原备份"
+    echo "0. 返回"
+    read -p "请选择: " br_choice
+
+    case $br_choice in
+        1)
+            local TIME=$(date +%Y%m%d_%H%M%S)
+            local B_NAME="singbox_full_$TIME.tar.gz"
+            
+            echo -e "${YELLOW}正在打包内核与配置...${PLAIN}"
+            # 创建临时目录
+            mkdir -p "/tmp/sb_bak"
+            cp /usr/local/bin/sing-box "/tmp/sb_bak/"
+            cp -r /etc/sing-box "/tmp/sb_bak/"
+            
+            # 打包
+            tar -czf "$BACKUP_DIR/$B_NAME" -C "/tmp/sb_bak" .
+            rm -rf "/tmp/sb_bak"
+            
+            echo -e "${GREEN}✔ 备份成功！${PLAIN}"
+            echo -e "文件保存在: ${CYAN}$BACKUP_DIR/$B_NAME${PLAIN}"
+            ;;
+        2)
+            echo -e "${YELLOW}可用备份列表:${PLAIN}"
+            ls "$BACKUP_DIR" | grep ".tar.gz" | cat -n
+            read -p "请选择要还原的序号: " r_idx
+            local R_FILE=$(ls "$BACKUP_DIR" | grep ".tar.gz" | sed -n "${r_idx}p")
+            
+            if [[ -n "$R_FILE" ]]; then
+                echo -e "${RED}警告：还原将覆盖当前内核与配置！${PLAIN}"
+                read -p "确定还原 $R_FILE 吗？(y/n): " confirm
+                if [[ "$confirm" == "y" ]]; then
+                    systemctl stop sing-box
+                    # 解压还原
+                    tar -xzf "$BACKUP_DIR/$R_FILE" -C /tmp/
+                    cp /tmp/sing-box /usr/local/bin/sing-box
+                    chmod +x /usr/local/bin/sing-box
+                    cp -r /tmp/sing-box/* /etc/sing-box/
+                    rm -rf /tmp/sing-box /tmp/config.json # 清理临时文件
+                    
+                    systemctl restart sing-box
+                    echo -e "${GREEN}✔ 还原成功并已重启服务！${PLAIN}"
+                fi
+            else
+                echo -e "${RED}序号无效。${PLAIN}"
+            fi
+            ;;
+        0) return ;;
+    esac
 }
 
 # --- 主菜单 ---
