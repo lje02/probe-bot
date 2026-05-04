@@ -137,8 +137,11 @@ add_node() {
             PRIVATE=$(echo "$KEYS" | awk -F': ' '/Private/ {print $2}' | tr -d '[:space:]')
             PUBLIC=$(echo "$KEYS" | awk -F': ' '/Public/ {print $2}' | tr -d '[:space:]')
             SHORT_ID=$(openssl rand -hex 8)
+            
             read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
-            read -p "SNI (默认 music.apple.com): " SNI; SNI=${SNI:-"music.apple.com"}
+            # 推荐域名
+            echo -e "推荐 SNI: www.microsoft.com, www.icloud.com"
+            read -p "SNI (默认 www.microsoft.com): " SNI; SNI=${SNI:-"www.microsoft.com"}
 
             jq --arg port "$PORT" \
                --arg uuid "$UUID" \
@@ -146,25 +149,36 @@ add_node() {
                --arg priv "$PRIVATE" \
                --arg sid "$SHORT_ID" \
                '.inbounds += [{
-                    "type":"vless",
-                    "tag":("vless-reality-" + $port),
-                    "listen":"::",
-                    "listen_port":($port|tonumber),
-                    "users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],
-                    "tls":{
-                        "enabled":true,
-                        "server_name":$sni,
-                        "reality":{
-                            "enabled":true,
-                            "handshake":{"server":$sni,"server_port":443},
-                            "private_key":$priv,
-                            "short_id":[$sid]
+                    "type": "vless",
+                    "tag": ("vless-reality-" + $port),
+                    "listen": "::",
+                    "listen_port": ($port|tonumber),
+                    "sniff": true,
+                    "sniff_override_destination": true,
+                    "udp_fragment": true,
+                    "domain_strategy": "prefer_ipv4",
+                    "users": [{
+                        "uuid": $uuid,
+                        "flow": "xtls-rprx-vision"
+                    }],
+                    "tls": {
+                        "enabled": true,
+                        "server_name": $sni,
+                        "reality": {
+                            "enabled": true,
+                            "handshake": {
+                                "server": $sni,
+                                "server_port": 443
+                            },
+                            "private_key": $priv,
+                            "short_id": [$sid]
                         }
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
-            echo -e "${GREEN}节点链接:${PLAIN}"
-            echo "vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality"
+            echo -e "${GREEN}VLESS-Reality 配置成功！${PLAIN}"
+            echo -e "${YELLOW}Public Key (pbk): ${CYAN}$PUBLIC${PLAIN} (请务必保存，管理菜单里找不到它)"
+            echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality-US-West${PLAIN}"
             ;;
         2)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
