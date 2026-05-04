@@ -81,7 +81,7 @@ add_node() {
     echo "3. Hysteria2"
     echo "4. Shadowsocks (2022-blake3)"
     echo "5. Socks5"
-    echo "6. 返回"
+    echo "0. 返回"
     read -p "请选择: " choice
 
     IP=$(get_ip)
