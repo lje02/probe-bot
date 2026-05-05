@@ -309,7 +309,6 @@ add_node() {
 
             echo -e "${GREEN}Hysteria2 配置成功！${PLAIN}"
             echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE#Hy2_$PORT"
-            [[ "$ALLOW_INSECURE" == "0" ]] && echo -e "${CYAN}已启用真证书，客户端可关闭 '允许不安全连接'。${PLAIN}"
             ;;
         4)
             read -p "端口: " PORT
