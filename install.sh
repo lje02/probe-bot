@@ -307,8 +307,20 @@ add_node() {
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
+            # 自动获取当前证书的域名 (CN)
+            SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_PATH" | sed -n 's/.*CN = //p')
+
             echo -e "${GREEN}Hysteria2 配置成功！${PLAIN}"
-            echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE#Hy2_$PORT"
+            
+            if [[ "$IS_INSECURE" == "0" ]]; then
+                # 真证书链接：必须带上 sni，且 insecure=0
+                echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=0&sni=$SNI_NAME#Hy2_$PORT"
+                echo -e "${CYAN}✔ 已启用真证书并自动添加 SNI，客户端可放心关闭 '允许不安全连接'。${PLAIN}"
+            else
+                # 自签名链接：保持原样
+                echo "节点链接: hysteria2://$PASS@$IP:$PORT?insecure=1#Hy2_$PORT"
+                echo -e "${YELLOW}! 使用自签名证书，客户端必须开启 '允许不安全连接'。${PLAIN}"
+            fi
             ;;
         4)
             read -p "端口: " PORT
@@ -448,10 +460,15 @@ manage_configs() {
                     echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INSECURE&congestion_control=bbr#TUIC5_$PORT${PLAIN}"
                     ;;
                 hysteria2)
+                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
                     local CERT_FILE=$(echo "$CONF" | jq -r '.tls.certificate_path')
-                    local INSECURE_VAL="1"
-                    [[ "$CERT_FILE" == "/etc/sing-box/certs/server.crt" ]] && INSECURE_VAL="0"
-                    echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=$INSECURE_VAL#Hy2_$PORT${PLAIN}"
+                    
+                    if [[ "$CERT_FILE" == "/etc/sing-box/certs/server.crt" ]]; then
+                        local SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_FILE" | sed -n 's/.*CN = //p')
+                        echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=0&sni=$SNI_NAME#Hy2_$PORT${PLAIN}"
+                    else
+                        echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=1#Hy2_$PORT${PLAIN}"
+                    fi
                     ;;
                 shadowsocks)
                     local METHOD=$(echo "$CONF" | jq -r .method)
