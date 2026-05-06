@@ -21,7 +21,7 @@ UPDATE_URL="https://raw.githubusercontent.com/lje02/sing/main/install.sh"
 # --- 辅助工具 ---
 pause() {
     echo ""
-    read -p "操作完成，按回车键返回..."
+    read -p "操作完成，按回车键继续..."
 }
 
 init_config() {
@@ -44,6 +44,7 @@ show_status() {
 }
 
 # --- 功能模块 ---
+
 apply_cert() {
     echo -e "${YELLOW}--- ACME 域名证书申请 ---${PLAIN}"
     read -p "请输入解析到本机的域名: " domain
@@ -69,8 +70,9 @@ apply_cert() {
             --key-file /etc/sing-box/certs/server.key \
             --fullchain-file /etc/sing-box/certs/server.crt
         echo -e "${GREEN}✔ 证书申请并安装成功！${PLAIN}"
+        echo -e "证书路径: ${BLUE}/etc/sing-box/certs/server.crt${PLAIN}"
     else
-        echo -e "${RED}✘ 证书申请失败，请检查 80 端口。${PLAIN}"
+        echo -e "${RED}✘ 证书申请失败，请检查域名解析或 80 端口是否开放。${PLAIN}"
     fi
     systemctl start sing-box 2>/dev/null
     pause
@@ -87,10 +89,14 @@ enable_bbr() {
             echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
             echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
             sysctl -p >/dev/null 2>&1
-            echo -e "${GREEN}BBR 已开启！${PLAIN}"
+            if lsmod | grep -q bbr; then
+                echo -e "${GREEN}BBR 成功开启！${PLAIN}"
+            else
+                echo -e "${RED}BBR 开启失败。${PLAIN}"
+            fi
         fi
     else
-        echo -e "${RED}内核版本过低，不支持 BBR。${PLAIN}"
+        echo -e "${RED}内核版本过低 ($kernel_version)，不支持 BBR。${PLAIN}"
     fi
     pause
 }
@@ -100,9 +106,11 @@ auto_backup() {
     mkdir -p "$BACKUP_DIR"
     local TIME=$(date +%Y%m%d_%H%M%S)
     local B_NAME="auto_bak_before_update_$TIME.tar.gz"
+    
     mkdir -p "/tmp/sb_auto_bak"
     [[ -f "/usr/local/bin/sing-box" ]] && cp "/usr/local/bin/sing-box" "/tmp/sb_auto_bak/"
     [[ -d "/etc/sing-box" ]] && cp -r /etc/sing-box/* "/tmp/sb_auto_bak/"
+    
     tar -czf "$BACKUP_DIR/$B_NAME" -C "/tmp/sb_auto_bak" . >/dev/null 2>&1
     rm -rf "/tmp/sb_auto_bak"
     echo -e "${YELLOW}[自动快照] 更新前已备份至: $B_NAME${PLAIN}"
@@ -111,6 +119,7 @@ auto_backup() {
 install_base() {
     echo -e "${GREEN}>>> 正在安装必要依赖...${PLAIN}"
     apt update -y && apt install -y curl jq openssl tar util-linux wget
+
     TAG=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r .tag_name)
     wget -O sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-amd64.tar.gz"
     tar -xzf sing-box.tar.gz
@@ -139,7 +148,7 @@ EOF
     cp "$0" /usr/local/bin/ssb
     chmod +x /usr/local/bin/ssb
     systemctl start sing-box
-    echo -e "${GREEN}安装完成！输入 ssb 呼出菜单。${PLAIN}"
+    echo -e "${GREEN}安装完成！现在你可以输入 ssb 呼出菜单。${PLAIN}"
     pause
 }
 
@@ -150,7 +159,7 @@ add_node() {
     echo "2. TUIC v5"
     echo "3. Hysteria2"
     echo "4. Shadowsocks (2022-blake3)"
-    echo "5. VLESS + WS +CF"
+    echo "5. VLESS + WS + CF"
     echo "6. Socks5"
     echo "0. 返回"
     read -p "请选择: " choice
@@ -169,9 +178,26 @@ add_node() {
             read -p "SNI (默认 music.apple.com): " SNI; SNI=${SNI:-"music.apple.com"}
 
             jq --arg port "$PORT" --arg uuid "$UUID" --arg sni "$SNI" --arg priv "$PRIVATE" --arg sid "$SHORT_ID" \
-               '.inbounds += [{"type":"vless","tag":("reality"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$sni,"reality":{"enabled":true,"handshake":{"server":$sni,"server_port":443},"private_key":$priv,"short_id":[$sid]}}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo -e "${GREEN}节点链接:${PLAIN}"
-            echo "vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality"
+               '.inbounds += [{
+                    "type":"vless",
+                    "tag":("reality"+$port),
+                    "listen":"::",
+                    "listen_port":($port|tonumber),
+                    "users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],
+                    "tls":{
+                        "enabled":true,
+                        "server_name":$sni,
+                        "reality":{
+                            "enabled":true,
+                            "handshake":{"server":$sni,"server_port":443},
+                            "private_key":$priv,
+                            "short_id":[$sid]
+                        }
+                    }
+                }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            
+            echo -e "${GREEN}节点添加成功！${PLAIN}"
+            echo -e "分享链接: ${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality${PLAIN}"
             ;;
         2)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
@@ -180,8 +206,9 @@ add_node() {
             read -p "选择: " cert_type
             if [[ "$cert_type" == "2" ]]; then
                 CERT_PATH="/etc/sing-box/certs/server.crt"; KEY_PATH="/etc/sing-box/certs/server.key"
-                [[ ! -f "$CERT_PATH" ]] && echo "请先申请证书" && return
-                ALLOW_INSECURE="0"; SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_PATH" | sed -n 's/.*CN = //p')
+                [[ ! -f "$CERT_PATH" ]] && echo "错误: 未检测到真证书，请先申请" && pause && return
+                ALLOW_INSECURE="0"
+                SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_PATH" | sed -n 's/.*CN = //p')
             else
                 CERT_PATH="/etc/sing-box/tuic.crt"; KEY_PATH="/etc/sing-box/tuic.key"
                 openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=apple.com" -days 3650 2>/dev/null
@@ -189,7 +216,7 @@ add_node() {
             fi
             jq --arg port "$PORT" --arg uuid "$UUID" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
                '.inbounds += [{"type":"tuic","tag":("tuic"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid,"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key,"alpn":["h3"]}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo "tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INSECURE&congestion_control=bbr#TUIC5_$PORT"
+            echo -e "分享链接: ${BLUE}tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INSECURE&congestion_control=bbr#TUIC5_$PORT${PLAIN}"
             ;;
         3)
             read -p "端口: " PORT; read -p "密码: " PASS
@@ -197,7 +224,7 @@ add_node() {
             read -p "选择: " cert_type
             if [[ "$cert_type" == "2" ]]; then
                 CERT_PATH="/etc/sing-box/certs/server.crt"; KEY_PATH="/etc/sing-box/certs/server.key"
-                [[ ! -f "$CERT_PATH" ]] && echo "请先申请证书" && return
+                [[ ! -f "$CERT_PATH" ]] && echo "错误: 未检测到真证书" && pause && return
                 IS_INSECURE="0"; SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_PATH" | sed -n 's/.*CN = //p')
             else
                 CERT_PATH="/etc/sing-box/hy2.crt"; KEY_PATH="/etc/sing-box/hy2.key"
@@ -206,28 +233,28 @@ add_node() {
             fi
             jq --arg port "$PORT" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
                '.inbounds += [{"type":"hysteria2","tag":("hy2"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo "hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE&sni=$SNI_NAME#Hy2_$PORT"
+            echo -e "分享链接: ${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE&sni=$SNI_NAME#Hy2_$PORT${PLAIN}"
             ;;
         4)
             read -p "端口: " PORT; PASS=$(openssl rand -base64 16); METHOD="2022-blake3-aes-128-gcm"
             jq --arg port "$PORT" --arg pass "$PASS" --arg method "$METHOD" \
                '.inbounds += [{"type":"shadowsocks","tag":("ss"+$port),"listen":"::","listen_port":($port|tonumber),"method":$method,"password":$pass}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
-            echo "ss://$SS_BASE64@$IP:$PORT#SS"
+            echo -e "分享链接: ${BLUE}ss://$SS_BASE64@$IP:$PORT#SS_$PORT${PLAIN}"
             ;;
         5)
-            read -p "域名: " DOMAIN; [[ ! -f "/etc/sing-box/certs/server.crt" ]] && echo "无证书" && return
+            read -p "域名: " DOMAIN; [[ ! -f "/etc/sing-box/certs/server.crt" ]] && echo "错误: 未检测到 SSL 证书" && pause && return
             read -p "端口: " PORT; read -p "WS路径: " WSPATH; WSPATH=${WSPATH:-"/video"}
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
             jq --arg port "$PORT" --arg uuid "$UUID" --arg path "$WSPATH" --arg domain "$DOMAIN" \
                '.inbounds += [{"type":"vless","tag":("vless-ws-"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid}],"transport":{"type":"ws","path":$path},"tls":{"enabled":true,"server_name":$domain,"certificate_path":"/etc/sing-box/certs/server.crt","key_path":"/etc/sing-box/certs/server.key"}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo "vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&path=$WSPATH#CF_VLESS_$PORT"
+            echo -e "分享链接: ${BLUE}vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&path=$WSPATH#CF_VLESS_$PORT${PLAIN}"
             ;;
         6)
             read -p "端口: " PORT; read -p "用户: " USER; read -p "密码: " PASS
             jq --arg port "$PORT" --arg user "$USER" --arg pass "$PASS" \
                '.inbounds += [{"type":"socks","tag":("socks"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"username":$user,"password":$pass}]}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo "Socks5 添加成功"
+            echo "Socks5 节点添加成功"
             ;;
     esac
     systemctl restart sing-box
@@ -246,21 +273,62 @@ manage_configs() {
     case $op in
         1)
             local CONF=$(jq -c ".inbounds[$(($idx-1))]" "$CONFIG_FILE")
-            echo -e "${GREEN}JSON内容:${PLAIN}"
+            local TYPE=$(echo "$CONF" | jq -r .type)
+            local PORT=$(echo "$CONF" | jq -r .listen_port)
+            local IP=$(get_ip)
+
+            echo -e "\n${GREEN}================ 原始 JSON 配置 ================${PLAIN}"
             echo "$CONF" | jq .
+            echo -e "${GREEN}===============================================${PLAIN}"
+
+            echo -e "\n${YELLOW}>>>> 自动生成的分享链接 <<<<${PLAIN}"
+            case $TYPE in
+                vless)
+                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                    local SNI=$(echo "$CONF" | jq -r '.tls.server_name')
+                    local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0] // ""')
+                    local PBK="[请检查创建时的公钥]" 
+                    if [[ -n "$SID" ]]; then
+                        echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PBK&sid=$SID&type=tcp&flow=xtls-rprx-vision#VLESS_Reality_$PORT${PLAIN}"
+                    else
+                        local WSPATH=$(echo "$CONF" | jq -r '.transport.path // ""')
+                        echo -e "${BLUE}vless://$UUID@$IP:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#VLESS_WS_$PORT${PLAIN}"
+                    fi
+                    ;;
+                tuic)
+                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                    echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr#TUIC_$PORT${PLAIN}"
+                    ;;
+                hysteria2)
+                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                    echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT#Hy2_$PORT${PLAIN}"
+                    ;;
+                shadowsocks)
+                    local METHOD=$(echo "$CONF" | jq -r .method)
+                    local PASS=$(echo "$CONF" | jq -r .password)
+                    local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
+                    echo -e "${BLUE}ss://$SS_BASE64@$IP:$PORT#SS_$PORT${PLAIN}"
+                    ;;
+                socks)
+                    local USER=$(echo "$CONF" | jq -r '.users[0].username')
+                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                    echo -e "${BLUE}socks5://$USER:$PASS@$IP:$PORT${PLAIN}"
+                    ;;
+            esac
             pause
             ;;
         2)
             read -p "新端口: " NP
             jq ".inbounds[$(($idx-1))].listen_port = ($NP|tonumber)" "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             systemctl restart sing-box
-            echo "端口已更新"
+            echo "端口已更新并重启服务"
             pause
             ;;
         3)
             jq "del(.inbounds[$(($idx-1))])" "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             systemctl restart sing-box
-            echo "已删除"
+            echo "配置已删除"
             pause
             ;;
     esac
@@ -288,14 +356,15 @@ chain_proxy() {
     else
         jq '.route.rules = [] | .outbounds = (.outbounds | map(select(.tag | startswith("chain-out-") | not)))' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
         systemctl restart sing-box
-        echo "链式已清除"
+        echo "所有链式转发已清除"
     fi
     pause
 }
 
 update_all() {
     auto_backup
-    echo "1. 更新脚本 | 2. 更新内核 | 0. 返回"
+    echo -e "${CYAN}请选择更新项:${PLAIN}"
+    echo "1. 更新管理脚本 | 2. 更新 sing-box 内核 | 0. 返回"
     read -p "选择: " uc
     [[ "$uc" == "0" ]] && return
     if [ "$uc" == "1" ]; then
@@ -310,7 +379,8 @@ update_all() {
 
 backup_restore() {
     clear
-    echo "1. 立即备份 | 2. 还原备份 | 0. 返回"
+    echo -e "${YELLOW}--- 备份与还原 ---${PLAIN}"
+    echo "1. 立即备份 (内核 + 配置) | 2. 还原备份 | 0. 返回"
     read -p "选择: " br_choice
     [[ "$br_choice" == "0" ]] && return
     
@@ -321,10 +391,11 @@ backup_restore() {
         cp /usr/local/bin/sing-box "/tmp/sb_bak/"
         cp -r /etc/sing-box "/tmp/sb_bak/"
         tar -czf "$BACKUP_DIR/singbox_full_$TIME.tar.gz" -C "/tmp/sb_bak" .
-        echo "备份完成"
+        rm -rf "/tmp/sb_bak"
+        echo "备份完成: singbox_full_$TIME.tar.gz"
     else
         ls "$BACKUP_DIR" | grep ".tar.gz" | cat -n
-        read -p "选择序号: " r_idx
+        read -p "选择要还原的序号: " r_idx
         local R_FILE=$(ls "$BACKUP_DIR" | grep ".tar.gz" | sed -n "${r_idx}p")
         if [[ -n "$R_FILE" ]]; then
             systemctl stop sing-box
@@ -332,7 +403,7 @@ backup_restore() {
             cp /tmp/sing-box /usr/local/bin/sing-box
             cp -r /tmp/sing-box/* /etc/sing-box/
             systemctl restart sing-box
-            echo "还原成功"
+            echo "备份 $R_FILE 还原成功"
         fi
     fi
     pause
@@ -371,17 +442,17 @@ while true; do
             if [[ "$confirm" == "y" ]]; then
                 systemctl stop sing-box && rm -f /usr/local/bin/ssb
                 rm -rf /etc/sing-box
-                echo "已卸载"
+                echo "sing-box 已彻底卸载"
                 exit 0
             fi
             ;;
         88)
-            echo -e "${YELLOW}正在重启...${PLAIN}"
+            echo -e "${YELLOW}正在重启服务...${PLAIN}"
             systemctl restart sing-box
             sleep 1
             ;;
         0) 
-            echo -e "${GREEN}再见！${PLAIN}"
+            echo -e "${GREEN}脚本已退出。${PLAIN}"
             exit 0 
             ;;
         *) 
