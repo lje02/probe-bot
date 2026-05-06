@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# sing-box 
+# sing-box  
 # ==========================================
 
 RED='\033[1;31m'
@@ -430,7 +430,7 @@ backup_restore() {
 # --- 主菜单 ---
 while true; do
     clear
-    echo -e "--- ${YELLOW}sing-box 综合管理脚本 (ssb)${PLAIN} ---"
+    echo -e "- ${YELLOW}sing-box 节点信息在etc/sing-box/links${PLAIN} -"
     show_status
     echo "--------------------------------"
     echo "1. 安装 / 重装 sing-box"
