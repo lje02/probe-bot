@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# sing-box 一键脚本 (快捷方式: ssb)
+# sing-box 综合管理脚本 (ssb) - 持久化链接版
 # ==========================================
 
 RED='\033[1;31m'
@@ -13,9 +13,12 @@ WHITE='\033[1;37m'
 PLAIN='\033[0m'     
 
 CONFIG_FILE="/etc/sing-box/config.json"
+LINK_DIR="/etc/sing-box/links"
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
 UPDATE_URL="https://raw.githubusercontent.com/lje02/sing/main/install.sh"
 
+# 初始化目录
+mkdir -p "$LINK_DIR"
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 运行！${PLAIN}" && exit 1
 
 # --- 辅助工具 ---
@@ -167,6 +170,9 @@ add_node() {
     [[ "$choice" == "0" ]] && return
 
     IP=$(get_ip)
+    local LINK=""
+    local TAG=""
+
     case $choice in
         1)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
@@ -176,11 +182,12 @@ add_node() {
             SHORT_ID=$(openssl rand -hex 8)
             read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
             read -p "SNI (默认 music.apple.com): " SNI; SNI=${SNI:-"music.apple.com"}
+            TAG="reality${PORT}"
 
-            jq --arg port "$PORT" --arg uuid "$UUID" --arg sni "$SNI" --arg priv "$PRIVATE" --arg sid "$SHORT_ID" \
+            jq --arg port "$PORT" --arg uuid "$UUID" --arg sni "$SNI" --arg priv "$PRIVATE" --arg sid "$SHORT_ID" --arg tag "$TAG" \
                '.inbounds += [{
                     "type":"vless",
-                    "tag":("reality"+$port),
+                    "tag":$tag,
                     "listen":"::",
                     "listen_port":($port|tonumber),
                     "users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],
@@ -195,18 +202,17 @@ add_node() {
                         }
                     }
                 }]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            
-            echo -e "${GREEN}节点添加成功！${PLAIN}"
-            echo -e "分享链接: ${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#VLESS-Reality${PLAIN}"
+            LINK="vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SHORT_ID&type=tcp&flow=xtls-rprx-vision#$TAG"
             ;;
         2)
             UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
             read -p "端口: " PORT; read -p "密码: " PASS
+            TAG="tuic${PORT}"
             echo -e "1. 自签名证书 | 2. ACME 真证书"
             read -p "选择: " cert_type
             if [[ "$cert_type" == "2" ]]; then
                 CERT_PATH="/etc/sing-box/certs/server.crt"; KEY_PATH="/etc/sing-box/certs/server.key"
-                [[ ! -f "$CERT_PATH" ]] && echo "错误: 未检测到真证书，请先申请" && pause && return
+                [[ ! -f "$CERT_PATH" ]] && echo "错误: 未检测到真证书" && pause && return
                 ALLOW_INSECURE="0"
                 SNI_NAME=$(openssl x509 -noout -subject -in "$CERT_PATH" | sed -n 's/.*CN = //p')
             else
@@ -214,12 +220,13 @@ add_node() {
                 openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=apple.com" -days 3650 2>/dev/null
                 ALLOW_INSECURE="1"; SNI_NAME="apple.com"
             fi
-            jq --arg port "$PORT" --arg uuid "$UUID" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
-               '.inbounds += [{"type":"tuic","tag":("tuic"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid,"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key,"alpn":["h3"]}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo -e "分享链接: ${BLUE}tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INSECURE&congestion_control=bbr#TUIC5_$PORT${PLAIN}"
+            jq --arg port "$PORT" --arg uuid "$UUID" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" --arg tag "$TAG" \
+               '.inbounds += [{"type":"tuic","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid,"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key,"alpn":["h3"]}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            LINK="tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INSECURE&congestion_control=bbr#$TAG"
             ;;
         3)
             read -p "端口: " PORT; read -p "密码: " PASS
+            TAG="hy2${PORT}"
             echo -e "1. 自签名证书 | 2. ACME 真证书"
             read -p "选择: " cert_type
             if [[ "$cert_type" == "2" ]]; then
@@ -231,32 +238,40 @@ add_node() {
                 openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=amazon.com" -days 3650 2>/dev/null
                 IS_INSECURE="1"; SNI_NAME="amazon.com"
             fi
-            jq --arg port "$PORT" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
-               '.inbounds += [{"type":"hysteria2","tag":("hy2"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo -e "分享链接: ${BLUE}hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE&sni=$SNI_NAME#Hy2_$PORT${PLAIN}"
+            jq --arg port "$PORT" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" --arg tag "$TAG" \
+               '.inbounds += [{"type":"hysteria2","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            LINK="hysteria2://$PASS@$IP:$PORT?insecure=$IS_INSECURE&sni=$SNI_NAME#$TAG"
             ;;
         4)
-            read -p "端口: " PORT; PASS=$(openssl rand -base64 16); METHOD="2022-blake3-aes-128-gcm"
-            jq --arg port "$PORT" --arg pass "$PASS" --arg method "$METHOD" \
-               '.inbounds += [{"type":"shadowsocks","tag":("ss"+$port),"listen":"::","listen_port":($port|tonumber),"method":$method,"password":$pass}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            read -p "端口: " PORT; PASS=$(openssl rand -base64 16); METHOD="2022-blake3-aes-128-gcm"; TAG="ss${PORT}"
+            jq --arg port "$PORT" --arg pass "$PASS" --arg method "$METHOD" --arg tag "$TAG" \
+               '.inbounds += [{"type":"shadowsocks","tag":$tag,"listen":"::","listen_port":($port|tonumber),"method":$method,"password":$pass}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
-            echo -e "分享链接: ${BLUE}ss://$SS_BASE64@$IP:$PORT#SS_$PORT${PLAIN}"
+            LINK="ss://$SS_BASE64@$IP:$PORT#$TAG"
             ;;
         5)
             read -p "域名: " DOMAIN; [[ ! -f "/etc/sing-box/certs/server.crt" ]] && echo "错误: 未检测到 SSL 证书" && pause && return
             read -p "端口: " PORT; read -p "WS路径: " WSPATH; WSPATH=${WSPATH:-"/video"}
-            UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
-            jq --arg port "$PORT" --arg uuid "$UUID" --arg path "$WSPATH" --arg domain "$DOMAIN" \
-               '.inbounds += [{"type":"vless","tag":("vless-ws-"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid}],"transport":{"type":"ws","path":$path},"tls":{"enabled":true,"server_name":$domain,"certificate_path":"/etc/sing-box/certs/server.crt","key_path":"/etc/sing-box/certs/server.key"}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo -e "分享链接: ${BLUE}vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&path=$WSPATH#CF_VLESS_$PORT${PLAIN}"
+            TAG="vless-ws-${PORT}"; UUID=$($SB_BIN generate uuid 2>/dev/null || uuidgen)
+            jq --arg port "$PORT" --arg uuid "$UUID" --arg path "$WSPATH" --arg domain "$DOMAIN" --arg tag "$TAG" \
+               '.inbounds += [{"type":"vless","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid}],"transport":{"type":"ws","path":$path},"tls":{"enabled":true,"server_name":$domain,"certificate_path":"/etc/sing-box/certs/server.crt","key_path":"/etc/sing-box/certs/server.key"}}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            LINK="vless://$UUID@$DOMAIN:$PORT?encryption=none&security=tls&type=ws&path=$WSPATH#$TAG"
             ;;
         6)
-            read -p "端口: " PORT; read -p "用户: " USER; read -p "密码: " PASS
-            jq --arg port "$PORT" --arg user "$USER" --arg pass "$PASS" \
-               '.inbounds += [{"type":"socks","tag":("socks"+$port),"listen":"::","listen_port":($port|tonumber),"users":[{"username":$user,"password":$pass}]}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            echo "Socks5 节点添加成功"
+            read -p "端口: " PORT; read -p "用户: " USER; read -p "密码: " PASS; TAG="socks${PORT}"
+            jq --arg port "$PORT" --arg user "$USER" --arg pass "$PASS" --arg tag "$TAG" \
+               '.inbounds += [{"type":"socks","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"username":$user,"password":$pass}]}]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            LINK="socks5://$USER:$PASS@$IP:$PORT#$TAG"
             ;;
     esac
+
+    # 保存链接文件
+    if [[ -n "$LINK" ]]; then
+        echo "$LINK" > "$LINK_DIR/${TAG}.link"
+        echo -e "${GREEN}节点添加成功并已保存链接！${PLAIN}"
+        echo -e "分享链接: ${BLUE}$LINK${PLAIN}"
+    fi
+
     systemctl restart sing-box
     pause
 }
@@ -268,6 +283,7 @@ manage_configs() {
     read -p "请选择序号 (q返回): " idx
     [[ "$idx" == "q" ]] && return
 
+    local TAG=$(jq -r ".inbounds[$(($idx-1))].tag" "$CONFIG_FILE")
     echo -e "\n1. 查看详情/链接 | 2. 修改端口 | 3. 删除配置"
     read -p "选择操作: " op
     case $op in
@@ -281,58 +297,60 @@ manage_configs() {
             echo "$CONF" | jq .
             echo -e "${GREEN}===============================================${PLAIN}"
 
-            echo -e "\n${YELLOW}>>>> 自动生成的分享链接 <<<<${PLAIN}"
-            case $TYPE in
-                vless)
-                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
-                    local SNI=$(echo "$CONF" | jq -r '.tls.server_name')
-                    local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0] // ""')
-                    local PBK="[请检查创建时的公钥]" 
-                    if [[ -n "$SID" ]]; then
-                        echo -e "${BLUE}vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PBK&sid=$SID&type=tcp&flow=xtls-rprx-vision#VLESS_Reality_$PORT${PLAIN}"
-                    else
-                        local WSPATH=$(echo "$CONF" | jq -r '.transport.path // ""')
-                        echo -e "${BLUE}vless://$UUID@$IP:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#VLESS_WS_$PORT${PLAIN}"
-                    fi
-                    ;;
-                tuic)
-                    local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
-                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                    echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr#TUIC_$PORT${PLAIN}"
-                    ;;
-                hysteria2)
-                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                    echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT#Hy2_$PORT${PLAIN}"
-                    ;;
-                shadowsocks)
-                    local METHOD=$(echo "$CONF" | jq -r .method)
-                    local PASS=$(echo "$CONF" | jq -r .password)
-                    local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
-                    echo -e "${BLUE}ss://$SS_BASE64@$IP:$PORT#SS_$PORT${PLAIN}"
-                    ;;
-                socks)
-                    local USER=$(echo "$CONF" | jq -r '.users[0].username')
-                    local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                    echo -e "${BLUE}socks5://$USER:$PASS@$IP:$PORT${PLAIN}"
-                    ;;
-            esac
+            echo -e "\n${YELLOW}>>>> 节点分享链接 <<<<${PLAIN}"
+            # 优先从文件读取持久化链接
+            if [[ -f "$LINK_DIR/${TAG}.link" ]]; then
+                echo -e "${BLUE}$(cat "$LINK_DIR/${TAG}.link")${PLAIN}"
+            else
+                echo -e "${RED}未找到持久化链接文件，尝试根据当前配置生成（Reality 公钥无法找回）...${PLAIN}"
+                case $TYPE in
+                    vless)
+                        local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                        local SNI=$(echo "$CONF" | jq -r '.tls.server_name')
+                        local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0] // ""')
+                        if [[ -n "$SID" ]]; then
+                            echo -e "${RED}Reality 节点的公钥不存储在配置文件中，无法生成链接。${PLAIN}"
+                        else
+                            local WSPATH=$(echo "$CONF" | jq -r '.transport.path // ""')
+                            echo -e "${BLUE}vless://$UUID@$IP:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#$TAG${PLAIN}"
+                        fi
+                        ;;
+                    tuic)
+                        local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                        local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                        echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr#$TAG${PLAIN}"
+                        ;;
+                    hysteria2)
+                        local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                        echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT#$TAG${PLAIN}"
+                        ;;
+                    shadowsocks)
+                        local METHOD=$(echo "$CONF" | jq -r .method); local PASS=$(echo "$CONF" | jq -r .password)
+                        local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
+                        echo -e "${BLUE}ss://$SS_BASE64@$IP:$PORT#$TAG${PLAIN}"
+                        ;;
+                esac
+            fi
             pause
             ;;
         2)
             read -p "新端口: " NP
             jq ".inbounds[$(($idx-1))].listen_port = ($NP|tonumber)" "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             systemctl restart sing-box
-            echo "端口已更新并重启服务"
+            echo "端口已更新，请注意原链接中的端口信息已过期。"
             pause
             ;;
         3)
             jq "del(.inbounds[$(($idx-1))])" "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            rm -f "$LINK_DIR/${TAG}.link" # 同步删除链接文件
             systemctl restart sing-box
-            echo "配置已删除"
+            echo "配置及链接文件已删除"
             pause
             ;;
     esac
 }
+
+# --- 以下部分保持原样 ---
 
 chain_proxy() {
     clear
