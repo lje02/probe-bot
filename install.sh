@@ -437,58 +437,63 @@ parse_proxy_link() {
 }
 
 chain_proxy() {
-    local cp_choice idx LOCAL_CONF LOCAL_TAG LOCAL_PORT
-    local RAW_LINK R_ADDR R_PORT R_METHOD R_PASS R_USER hop_type
-    local OUT_TAG OUT_JSON
-    
-    # 检查依赖
-    [[ ! -x "$(command -v jq)" ]] && echo -e "${RED}错误: 未安装 jq${PLAIN}" && return
+    # 1. 变量清空与局部变量声明
+    local cp_choice idx LOCAL_CONF LOCAL_TAG \
+          RAW_LINK R_ADDR R_PORT R_METHOD R_PASS R_USER \
+          hop_type OUT_TAG OUT_JSON CURRENT_OUTBOUND
 
-    echo -e "${YELLOW}--- 链式代理管理 (支持分享链接) ---${PLAIN}"
-    echo "1. 添加链式转发"
-    echo "2. 删除链式转发"
+    echo -e "${YELLOW}--- 多级链式转发管理 (无限跳转模式) ---${PLAIN}"
+    echo "1. 添加/追加跳转节点 (Add/Append Hop)"
+    echo "2. 清空入站的所有转发规则 (Reset)"
     echo "0. 返回"
     read -p "请选择: " cp_choice
 
     case $cp_choice in
         1)
-            # 1. 选择本地入站
-            echo -e "${YELLOW}请选择本地入站节点:${PLAIN}"
+            # 2. 选择本地入站
+            echo -e "${YELLOW}请选择要操作的本地入站节点:${PLAIN}"
             jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) | Port: \(.[$i].listen_port // "N/A")"' "$CONFIG_FILE"
             read -p "选择序号: " idx
-            local LOCAL_CONF=$(jq -c ".inbounds[$((idx-1))]" "$CONFIG_FILE")
-            local LOCAL_TAG=$(echo "$LOCAL_CONF" | jq -r .tag)
-
-            # 2. 输入链接或手动配置
-            echo -e "\n${CYAN}提示: 可以直接粘贴 ss:// 或 socks5:// 链接，或按回车手动输入${PLAIN}"
-            read -p "请输入分享链接 (可选): " RAW_LINK
+            [[ -z "$idx" ]] && return
+            LOCAL_TAG=$(jq -r ".inbounds[$((idx-1))].tag" "$CONFIG_FILE")
             
-            if [[ -n "$RAW_LINK" ]]; then
-                parse_proxy_link "$RAW_LINK"
+            # 3. 核心逻辑：检测当前入站是否已有出站指向
+            # 查找 route.rules 中匹配该 inbound 的第一个 outbound
+            CURRENT_OUTBOUND=$(jq -r --arg itag "$LOCAL_TAG" '.route.rules[] | select(.inbound[0] == $itag) | .outbound' "$CONFIG_FILE" | head -n 1)
+
+            if [[ -n "$CURRENT_OUTBOUND" && "$CURRENT_OUTBOUND" != "null" ]]; then
+                echo -e "${CYAN}检测到当前入站已指向: $CURRENT_OUTBOUND${PLAIN}"
+                echo -e "${YELLOW}新节点将作为 [$CURRENT_OUTBOUND] 的下一跳（即级联）${PLAIN}"
+            else
+                echo -e "${CYAN}当前入站为直连状态，新节点将作为第一级跳转。${PLAIN}"
             fi
 
-            # 如果链接解析失败或未输入链接，进入手动模式
+            # 4. 获取新节点信息 (支持分享链接)
+            read -p "请输入新节点的分享链接 (ss:// 或 socks5://，或回车手动输入): " RAW_LINK
+            if [[ -n "$RAW_LINK" ]]; then
+                parse_proxy_link "$RAW_LINK" # 调用之前的解析函数
+            fi
+
             if [[ -z "$R_ADDR" ]]; then
-                echo -e "\n${CYAN}未检测到有效链接，进入手动配置模式:${PLAIN}"
                 echo "1. Shadowsocks (SS)"
                 echo "2. Socks5"
                 read -p "选择协议: " hop_type
-                read -p "远程服务器地址: " R_ADDR
-                read -p "远程端口: " R_PORT
-                
+                read -p "地址: " R_ADDR
+                read -p "端口: " R_PORT
                 if [[ "$hop_type" == "1" ]]; then
-                    read -p "SS加密方式 (默认 aes-128-gcm): " R_METHOD
-                    [[ -z "$R_METHOD" ]] && R_METHOD="aes-128-gcm"
+                    read -p "加密 (aes-128-gcm): " R_METHOD; [[ -z "$R_METHOD" ]] && R_METHOD="aes-128-gcm"
                     read -p "密码: " R_PASS
                 else
-                    read -p "用户名 (可选): " R_USER
-                    read -p "密码 (可选): " R_PASS
+                    read -p "用户名: " R_USER
+                    read -p "密码: " R_PASS
                 fi
             fi
 
-            # 3. 构造 Outbound JSON
-            local OUT_TAG="chain-out-$LOCAL_TAG"
-            local OUT_JSON=""
+            # 5. 构造新 Outbound JSON
+            # 关键点：新节点的 tag 必须唯一，用时间戳或随机数防止冲突
+            OUT_TAG="hop-$(date +%s)"
+            
+            # 构造基础 JSON
             if [[ "$hop_type" == "1" ]]; then
                 OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
                     '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}')
@@ -498,15 +503,27 @@ chain_proxy() {
                 [[ -n "$R_USER" ]] && OUT_JSON=$(echo "$OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + {username: $u, password: $p}')
             fi
 
-            # 4. 写入配置并重启
-            jq --argjson obj "$OUT_JSON" --arg in_tag "$LOCAL_TAG" --arg out_tag "$OUT_TAG" '
+            # 6. 实现跳转：如果有前一级，则设置 detour
+            if [[ -n "$CURRENT_OUTBOUND" && "$CURRENT_OUTBOUND" != "null" ]]; then
+                # 这种模式下：数据 -> 入站 -> 新节点 -> (detour) -> 旧链条
+                OUT_JSON=$(echo "$OUT_JSON" | jq --arg d "$CURRENT_OUTBOUND" '. + {detour: $d}')
+            fi
+
+            # 7. 更新配置
+            cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+            
+            # a. 添加新的 Outbound
+            # b. 更新或新增路由规则：确保该 inbound 指向最新的 OUT_TAG
+            jq --argjson obj "$OUT_JSON" --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '
                 .outbounds += [$obj] |
-                .route.rules = [{ "inbound": [$in_tag], "outbound": $out_tag }] + .route.rules
+                del(.route.rules[] | select(.inbound[0] == $itag)) |
+                .route.rules = [{ "inbound": [$itag], "outbound": $otag }] + .route.rules
             ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
             systemctl restart sing-box
-            echo -e "${GREEN} ✔ 链式转发配置成功！${PLAIN}"
+            echo -e "${GREEN} ✔ 节点追加成功！当前入口 [$LOCAL_TAG] 已通过新节点跳转。${PLAIN}"
             ;;
+            
         2)
             echo -e "${YELLOW}当前链式规则列表:${PLAIN}"
             local map_list=$(jq -r '.route.rules[] | select(.outbound | startswith("chain-out-")) | "\(.inbound[0]) -> \(.outbound)"' "$CONFIG_FILE")
@@ -587,7 +604,7 @@ while true; do
     echo "1. 安装 / 重装 sing-box"
     echo "2. 节点配置 (VLESS/TUIC/Hy2/SS/Socks)"
     echo "3. 管理配置 (查看/修改端口/删除)"
-    echo "4. 链式代理设置"
+    echo "4. 链式代理设置/管理"
     echo "5. 更新脚本或内核"
     echo "6. 备份 / 还原"
     echo "7. 开启 BBR 网络加速"
