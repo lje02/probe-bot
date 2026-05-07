@@ -44,6 +44,35 @@ save_and_restart() {
     fi
 }
 
+# --- 自动申请 WARP 账户信息 ---
+register_warp_account() {
+    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
+    
+    # 安装 WireGuard 工具以生成密钥对 (如果不希望安装，也可以用 openssl 模拟)
+    apt install -y wireguard-tools jq >/dev/null 2>&1
+
+    local priv=$(wg genkey)
+    local pub=$(echo "$priv" | wg pubkey)
+    local response=$(curl -s -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
+        -H "Content-Type: application/json" \
+        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+
+    if [[ "$response" != *"token"* ]]; then
+        echo -e "${RED}✘ WARP 注册失败，请检查网络是否能连接到 Cloudflare API${PLAIN}"
+        return 1
+    fi
+
+    # 提取关键参数
+    W_PRIV="$priv"
+    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4')
+    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6')
+    W_RES=$(echo "$response" | jq -c '.config.clientId' | sed 's/\"//g' | base64 -d | hexdump -v -e '/1 "0x%02x, "' | sed 's/, $//' | awk '{print "["$0"]"}')
+    # 处理 Reserved 格式，将其转换为 [0, 0, 0] 这种形式
+    W_RES_JSON=$(echo "$response" | jq -c '.config.clientId' | sed 's/\"//g' | base64 -d | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+
+    echo -e "${GREEN}✔ 成功获取 WARP 账户！${PLAIN}"
+}
+
 init_config() {
     mkdir -p /etc/sing-box "$LINK_DIR" "$CERT_DIR"
     if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
