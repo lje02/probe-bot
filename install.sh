@@ -587,36 +587,33 @@ chain_proxy() {
 
                 # --- 4. 写入并重启 ---
                 if [[ -z "$OUT_JSON" || "$OUT_JSON" == "null" ]]; then
-                    echo -e "${RED}错误: 节点配置生成失败，请检查输入或 API 响应${PLAIN}"
+                    echo -e "${RED}错误: 节点配置生成失败${PLAIN}"
                     sleep 2; continue
                 fi
 
-                # 使用临时文件处理，并捕获 jq 的错误输出
-                if ! jq --argjson obj "$OUT_JSON" --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '
+                # 尝试写入临时文件
+                jq --argjson obj "$OUT_JSON" --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '
                     .outbounds += [$obj] |
                     del(.route.rules[] | select(.inbound[0] == $itag)) |
                     .route.rules = [{ "inbound": [$itag], "outbound": $otag }] + .route.rules
-                ' "$CONFIG_FILE" > tmp.json 2>jq_error.log; then
-                    echo -e "${RED}错误: 配置文件 JSON 语法合并失败！${PLAIN}"
-                    echo -e "${YELLOW}报错详情: $(cat jq_error.log)${PLAIN}"
-                    rm -f tmp.json jq_error.log
-                    sleep 2; continue
-                fi
+                ' "$CONFIG_FILE" > tmp.json
 
-                # 最后的安全屏障：检查生成的 tmp.json 是否符合 sing-box 基本语法
-                if ! $SB_BIN check -c tmp.json >/dev/null 2>&1; then
-                    echo -e "${RED}错误: 生成的配置不符合 sing-box 规范，已拦截写入以防止服务停止${PLAIN}"
+                if [[ $? -eq 0 && -s tmp.json ]]; then
+                    mv tmp.json "$CONFIG_FILE"
+                    echo -e "${GREEN}✔ 链路配置已更新${PLAIN}"
+                    
+                    # 尝试重启服务
+                    systemctl restart sing-box
+                    if [[ $? -eq 0 ]]; then
+                        echo -e "${GREEN}✔ 服务重启成功${PLAIN}"
+                    else
+                        echo -e "${RED}✘ 服务重启失败，请检查配置${PLAIN}"
+                    fi
+                else
+                    echo -e "${RED}✘ 错误: 临时配置文件生成失败${PLAIN}"
                     rm -f tmp.json
-                    sleep 2; continue
                 fi
-
-                # 只有通过了 sing-box check，才覆盖原文件
-                mv tmp.json "$CONFIG_FILE"
-                rm -f jq_error.log
                 
-                echo -e "${GREEN}✔ 链路已更新 (追加了新节点)${PLAIN}"
-                # 这里的 save_and_restart 应该只负责 systemctl restart
-                save_and_restart 
                 sleep 2
                 ;;
 
