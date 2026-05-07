@@ -58,16 +58,25 @@ register_warp_account() {
         return 1
     fi
 
-        # ... 前面的注册请求保持不变 ...
 
     # 4. 提取参数并增加校验
     W_PRIV="$priv"
-    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4 // empty')
-    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6 // empty')
+    # 注意这里是 .addresses.v4 和 .addresses.v6
+    W_V4=$(echo "$response" | jq -r '.config.interface.addresses.v4 // .config.interface.address.v4 // empty')
+    W_V6=$(echo "$response" | jq -r '.config.interface.addresses.v6 // .config.interface.address.v6 // empty')
     
+    # 5. 转换 Reserved 格式 (client_id 即为 reserved 原始数据)
+    # 兼容处理：有些版本返回 clientId，有些返回 client_id
+    local cid=$(echo "$response" | jq -r '.config.clientId // .config.client_id // empty')
+    
+    if [[ -n "$cid" && "$cid" != "null" ]]; then
+        W_RES_JSON=$(echo "$cid" | base64 -d | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+    else
+        W_RES_JSON="[0,0,0]" # 备选默认值
+    fi
+
     if [[ -z "$W_V4" ]]; then
-        echo -e "${RED}✘ 注册失败，API 返回结果异常。${PLAIN}"
-        echo -e "${YELLOW}返回原始数据: ${response}${PLAIN}" # 这里会直接打印原因
+        echo -e "${RED}✘ 解析 WARP 账户信息失败，请检查 API 响应结构${PLAIN}"
         return 1
     fi
 
