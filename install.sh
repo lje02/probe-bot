@@ -776,7 +776,6 @@ manage_routing() {
 
             3)
                 # --- 删除逻辑 ---
-                           3)
                 echo -e "\n${YELLOW}选择要删除的规则序号:${PLAIN}"
                 # 提取非入站绑定的规则
                 local rules_list=$(jq -c '.route.rules[] | select(.inbound == null)' "$CONFIG_FILE")
