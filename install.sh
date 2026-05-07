@@ -58,13 +58,16 @@ register_warp_account() {
         return 1
     fi
 
-    W_PRIV="$priv"
-    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4')
-    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6')
-    W_RES_JSON=$(echo "$response" | jq -r '.config.clientId' | base64 -d | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+        # ... 前面的注册请求保持不变 ...
 
-    if [[ -z "$W_V4" || "$W_V4" == "null" ]]; then
-        echo -e "${RED}✘ 解析 WARP 账户失败${PLAIN}"
+    # 4. 提取参数并增加校验
+    W_PRIV="$priv"
+    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4 // empty')
+    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6 // empty')
+    
+    if [[ -z "$W_V4" ]]; then
+        echo -e "${RED}✘ 注册失败，API 返回结果异常。${PLAIN}"
+        echo -e "${YELLOW}返回原始数据: ${response}${PLAIN}" # 这里会直接打印原因
         return 1
     fi
 
