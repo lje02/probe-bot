@@ -501,9 +501,35 @@ chain_proxy() {
             echo -e "${GREEN} ✔ 链式转发配置成功！${PLAIN}"
             ;;
         2)
-            # ... (删除逻辑同前)
-            ;;
-        0) return ;;
+            # 1. 查找所有带有 chain-out- 前缀的出站规则
+            echo -e "${YELLOW}当前链式规则列表:${PLAIN}"
+            local map_list=$(jq -r '.route.rules[] | select(.outbound | startswith("chain-out-")) | "\(.inbound[0]) -> \(.outbound)"' "$CONFIG_FILE")
+            
+            if [[ -z "$map_list" ]]; then 
+                echo -e "${RED}未发现链式转发配置。${PLAIN}"
+                return
+            fi
+
+            echo "$map_list" | cat -n
+            read -p "删除序号: " del_idx
+            
+            local target_line=$(echo "$map_list" | sed -n "${del_idx}p")
+            [[ -z "$target_line" ]] && echo -e "${RED}无效序号${PLAIN}" && return
+
+            local DEL_IN_TAG=$(echo "$target_line" | awk '{print $1}')
+            local DEL_OUT_TAG=$(echo "$target_line" | awk '{print $3}')
+
+            # 2. 执行删除
+            jq --arg itag "$DEL_IN_TAG" --arg otag "$DEL_OUT_TAG" '
+                del(.route.rules[] | select(.inbound[0] == $itag and .outbound == $otag)) |
+                del(.outbounds[] | select(.tag == $otag))
+            ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+            
+            systemctl restart sing-box
+            echo -e "${GREEN}链式规则 [In:$DEL_IN_TAG] [Out:$DEL_OUT_TAG] 已清除。${PLAIN}"
+            ;;
+        0) return ;;
+        *) echo -e "${RED}无效输入${PLAIN}" ;;
     esac
 }
 
