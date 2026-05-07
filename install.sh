@@ -501,8 +501,7 @@ chain_proxy() {
             echo -e "${GREEN} ✔ 链式转发配置成功！${PLAIN}"
             ;;
         2)
-            # 1. 查找所有带有 chain-out- 前缀的出站规则
-            echo -e "${YELLOW}当前链式规则列表:${PLAIN}"
+            echo -e "${YELLOW}当前链式规则列表:${PLAIN}"
             local map_list=$(jq -r '.route.rules[] | select(.outbound | startswith("chain-out-")) | "\(.inbound[0]) -> \(.outbound)"' "$CONFIG_FILE")
             
             if [[ -z "$map_list" ]]; then 
