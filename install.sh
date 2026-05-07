@@ -437,116 +437,144 @@ parse_proxy_link() {
 }
 
 chain_proxy() {
+    # 局部变量声明
     local cp_choice idx LOCAL_TAG RAW_LINK R_ADDR R_PORT R_METHOD R_PASS R_USER \
           hop_type OUT_TAG OUT_JSON CURRENT_OUTBOUND
 
-    echo -e "${YELLOW}--- 链式代理管理 (支持多级跳转) ---${PLAIN}"
-    echo "1. 添加/追加跳转节点 (Add/Append)"
-    echo "2. 查看当前转发链路 (View)"
-    echo "3. 清空特定入站规则 (Reset)"
-    echo "0. 返回"
-    read -p "请选择: " cp_choice
+    while true; do
+        clear
+        echo -e "${YELLOW}--- 链式代理管理 (支持多级跳转) ---${PLAIN}"
+        echo "1. 添加/追加跳转节点 (Add/Append)"
+        echo "2. 查看当前转发链路 (View)"
+        echo "3. 清空特定入站规则 (Reset)"
+        echo "0. 返回主菜单"
+        echo "------------------------------------------------"
+        read -p "请选择: " cp_choice
 
-    case $cp_choice in
-        1)
-            # --- 添加/追加逻辑 ---
-            echo -e "${YELLOW}选择本地入站节点:${PLAIN}"
-            jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
-            read -p "选择序号: " idx
-            [[ -z "$idx" ]] && return
-            LOCAL_TAG=$(jq -r ".inbounds[$((idx-1))].tag" "$CONFIG_FILE")
-            
-            CURRENT_OUTBOUND=$(jq -r --arg itag "$LOCAL_TAG" '.route.rules[] | select(.inbound[0] == $itag) | .outbound' "$CONFIG_FILE" | head -n 1)
-
-            echo -e "\n${CYAN}请输入新节点信息 (支持 ss://, socks5://):${PLAIN}"
-            read -p "> " RAW_LINK
-            [[ -n "$RAW_LINK" ]] && parse_proxy_link "$RAW_LINK"
-
-            if [[ -z "$R_ADDR" ]]; then
-                read -p "协议 (1.SS 2.Socks5): " hop_type
-                read -p "地址: " R_ADDR
-                read -p "端口: " R_PORT
-                # ... (此处省略重复的密码输入逻辑，保持简洁)
-            fi
-
-            OUT_TAG="hop-$(date +%s)"
-            # 构造 JSON (带 detour)
-            if [[ "$hop_type" == "1" ]]; then
-                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" --arg d "$CURRENT_OUTBOUND" \
-                    '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass} + (if $d != "" and $d != "null" then {detour: $d} else {} end)')
-            else
-                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg d "$CURRENT_OUTBOUND" \
-                    '{type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"} + (if $d != "" and $d != "null" then {detour: $d} else {} end)')
-            fi
-
-            jq --argjson obj "$OUT_JSON" --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '
-                .outbounds += [$obj] |
-                del(.route.rules[] | select(.inbound[0] == $itag)) |
-                .route.rules = [{ "inbound": [$itag], "outbound": $otag }] + .route.rules
-            ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            
-            systemctl restart sing-box && echo -e "${GREEN}✔ 已追加节点。${PLAIN}"
-            ;;
-
-        2)
-            # --- 查看链路逻辑 ---
-            echo -e "\n${YELLOW}当前活跃转发链路:${PLAIN}"
-            echo "------------------------------------------------"
-            # 遍历所有含有 inbound 限制的路由规则
-            local rules_count=$(jq '.route.rules | length' "$CONFIG_FILE")
-            local found=0
-            
-            for ((i=0; i<rules_count; i++)); do
-                local in_tag=$(jq -r ".route.rules[$i].inbound[0] // empty" "$CONFIG_FILE")
-                local out_tag=$(jq -r ".route.rules[$i].outbound // empty" "$CONFIG_FILE")
+        case $cp_choice in
+            1)
+                # --- 选择入站 ---
+                echo -e "\n${YELLOW}选择本地入站节点:${PLAIN}"
+                jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
+                read -p "选择序号: " idx
+                [[ -z "$idx" ]] && continue
+                LOCAL_TAG=$(jq -r ".inbounds[$((idx-1))].tag" "$CONFIG_FILE")
                 
-                if [[ -n "$in_tag" && "$out_tag" != "direct" ]]; then
-                    found=1
-                    local path="$in_tag"
-                    local next="$out_tag"
-                    
-                    # 循环追溯 detour
-                    while [[ -n "$next" && "$next" != "null" ]]; do
-                        local srv=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | "\(.server):\(.server_port)"' "$CONFIG_FILE")
-                        path="$path -> $next($srv)"
-                        next=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | .detour // empty' "$CONFIG_FILE")
-                    done
-                    echo -e "${CYAN}[规则 $((i+1))]${PLAIN} $path -> 互联网"
+                # 检测现有链路
+                CURRENT_OUTBOUND=$(jq -r --arg itag "$LOCAL_TAG" '.route.rules[] | select(.inbound[0] == $itag) | .outbound' "$CONFIG_FILE" | head -n 1)
+
+                # --- 获取新节点 ---
+                echo -e "\n${CYAN}请输入新节点信息 (支持 ss://, socks5://):${PLAIN}"
+                read -p "> " RAW_LINK
+                [[ -n "$RAW_LINK" ]] && parse_proxy_link "$RAW_LINK"
+
+                if [[ -z "$R_ADDR" ]]; then
+                    read -p "协议 (1.SS 2.Socks5): " hop_type
+                    read -p "地址: " R_ADDR
+                    read -p "端口: " R_PORT
+                    if [[ "$hop_type" == "1" ]]; then
+                        read -p "加密 (aes-128-gcm): " R_METHOD; [[ -z "$R_METHOD" ]] && R_METHOD="aes-128-gcm"
+                        read -p "密码: " R_PASS
+                    else
+                        read -p "用户名 (可选): " R_USER
+                        read -p "密码 (可选): " R_PASS
+                    fi
                 fi
-            done
-            [[ $found -eq 0 ]] && echo "暂无转发规则。"
-            echo "------------------------------------------------"
-            ;;
 
-        3)
-            # --- 清空规则逻辑 ---
-            echo -e "${YELLOW}请选择要重置（改为直连）的入站节点:${PLAIN}"
-            local list=$(jq -r '.route.rules[] | select(.inbound != null) | .inbound[0]' "$CONFIG_FILE")
-            if [[ -z "$list" ]]; then echo "无转发规则"; return; fi
-            
-            echo "$list" | cat -n
-            read -p "选择序号: " del_idx
-            local DEL_IN_TAG=$(echo "$list" | sed -n "${del_idx}p")
-            
-            if [[ -n "$DEL_IN_TAG" ]]; then
-                # 递归查找所有相关的 hop 标签以便清理出站列表
-                local tags_to_del=$(jq -r --arg itag "$DEL_IN_TAG" '
-                    def get_chain(t): .outbounds[] | select(.tag == t) | .tag, (if .detour then get_chain(.detour) else empty end);
-                    (.route.rules[] | select(.inbound[0] == $itag) | .outbound) as $start |
-                    get_chain($start)
-                ' "$CONFIG_FILE")
+                # --- 构造配置 ---
+                OUT_TAG="hop-$(date +%s)"
+                if [[ "$hop_type" == "1" ]]; then
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" --arg d "$CURRENT_OUTBOUND" \
+                        '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass} + (if $d != "" and $d != "null" then {detour: $d} else {} end)')
+                else
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg d "$CURRENT_OUTBOUND" \
+                        '{type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"} + (if $d != "" and $d != "null" then {detour: $d} else {} end)')
+                fi
 
-                # 执行删除：删除路由规则和所有相关的出站
-                jq --arg itag "$DEL_IN_TAG" --argjson tags "$(echo "$tags_to_del" | jq -R . | jq -s .)" '
+                # --- 写入文件 ---
+                cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
+                jq --argjson obj "$OUT_JSON" --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '
+                    .outbounds += [$obj] |
                     del(.route.rules[] | select(.inbound[0] == $itag)) |
-                    del(.outbounds[] | select(.tag as $t | $tags | contains([$t])))
+                    .route.rules = [{ "inbound": [$itag], "outbound": $otag }] + .route.rules
                 ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
                 
-                systemctl restart sing-box && echo -e "${GREEN}✔ 链路已清空，入站 [$DEL_IN_TAG] 已恢复直连。${PLAIN}"
-            fi
-            ;;
-        0) return ;;
-    esac
+                echo -e "${GREEN}配置已更新。正在重启服务...${PLAIN}"
+                (systemctl restart sing-box &) # 使用后台运行防止阻塞
+                sleep 2
+                read -n 1 -s -r -p "按任意键继续..."
+                ;;
+
+            2)
+                # --- 查看链路 ---
+                echo -e "\n${YELLOW}当前活跃转发链路:${PLAIN}"
+                echo "------------------------------------------------"
+                local rules_count=$(jq '.route.rules | length' "$CONFIG_FILE")
+                local found=0
+                
+                for ((i=0; i<rules_count; i++)); do
+                    local in_tag=$(jq -r ".route.rules[$i].inbound[0] // empty" "$CONFIG_FILE")
+                    local out_tag=$(jq -r ".route.rules[$i].outbound // empty" "$CONFIG_FILE")
+                    
+                    if [[ -n "$in_tag" && "$out_tag" != "direct" && "$out_tag" != "block" ]]; then
+                        found=1
+                        local path="$in_tag"
+                        local next="$out_tag"
+                        
+                        while [[ -n "$next" && "$next" != "null" ]]; do
+                            local srv=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | "\(.server):\(.server_port)"' "$CONFIG_FILE")
+                            [[ -z "$srv" ]] && srv="内置节点"
+                            path="$path -> $next($srv)"
+                            next=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | .detour // empty' "$CONFIG_FILE")
+                        done
+                        echo -e "${CYAN}[规则]${PLAIN} $path -> 互联网"
+                    fi
+                done
+                [[ $found -eq 0 ]] && echo "暂无自定义转发规则。"
+                echo "------------------------------------------------"
+                read -n 1 -s -r -p "按任意键返回菜单..."
+                ;;
+
+            3)
+                # --- 清空规则 ---
+                echo -e "\n${YELLOW}请选择要重置为直连的入站节点:${PLAIN}"
+                local list=$(jq -r '.route.rules[] | select(.inbound != null) | .inbound[0]' "$CONFIG_FILE")
+                if [[ -z "$list" ]]; then 
+                    echo "没有发现转发规则。"
+                else
+                    echo "$list" | cat -n
+                    read -p "选择序号: " del_idx
+                    local DEL_IN_TAG=$(echo "$list" | sed -n "${del_idx}p")
+                    
+                    if [[ -n "$DEL_IN_TAG" ]]; then
+                        local tags_to_del=$(jq -r --arg itag "$DEL_IN_TAG" '
+                            def get_chain(t): .outbounds[] | select(.tag == t) | .tag, (if .detour then get_chain(.detour) else empty end);
+                            (.route.rules[] | select(.inbound[0] == $itag) | .outbound) as $start |
+                            get_chain($start)
+                        ' "$CONFIG_FILE")
+
+                        jq --arg itag "$DEL_IN_TAG" --argjson tags "$(echo "$tags_to_del" | jq -R . | jq -s .)" '
+                            del(.route.rules[] | select(.inbound[0] == $itag)) |
+                            del(.outbounds[] | select(.tag as $t | $tags | contains([$t])))
+                        ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+                        
+                        (systemctl restart sing-box &)
+                        echo -e "${GREEN}✔ 链路已清空。${PLAIN}"
+                    fi
+                fi
+                sleep 1
+                read -n 1 -s -r -p "按任意键继续..."
+                ;;
+
+            0)
+                return 0 # 正常返回主菜单
+                ;;
+            *)
+                echo -e "${RED}无效选择${PLAIN}"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 update_all() {
