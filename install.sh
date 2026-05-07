@@ -556,7 +556,7 @@ chain_proxy() {
                             --arg v4 "$W_V4" \
                             --arg v6 "$W_V6" \
                             --arg d "$CURRENT_OUTBOUND" \
-                            --argjson res "$W_RES_JSON" \
+                            --argjson res "$W_RES_JSON="[0,0,0]" \
                             '{
                                 "type": "wireguard",
                                 "tag": $t,
