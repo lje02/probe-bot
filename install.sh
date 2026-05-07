@@ -32,8 +32,8 @@ register_warp_account() {
     
     # 检查并安装依赖
     local need_install=0
-    local deps_to_install  # 先声明，不初始化数组
-    deps_to_install=()      # 再初始化空数
+    local deps_to_install
+        deps_to_install=()
     
     # 检查必需工具
     for dep in wireguard-tools jq curl; do
