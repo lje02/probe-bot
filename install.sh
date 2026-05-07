@@ -577,6 +577,131 @@ chain_proxy() {
     done
 }
 
+manage_routing() {
+    local rt_choice idx OUT_TAG MATCH_TYPE MATCH_VALUE RULE_JSON \
+          RAW_LINK R_ADDR R_PORT R_METHOD R_PASS R_USER hop_type
+
+    while true; do
+        clear
+        echo -e "${YELLOW}--- 通用分流管理 (Split Tunneling) ---${PLAIN}"
+        echo "1. 添加分流规则 (指定网站走特定节点)"
+        echo "2. 查看当前所有分流规则"
+        echo "3. 删除特定分流规则"
+        echo "0. 返回主菜单"
+        echo "------------------------------------------------"
+        read -p "请选择: " rt_choice
+
+        case $rt_choice in
+            1)
+                # --- 第一步：确定出站去向 ---
+                echo -e "\n${YELLOW}该流量应发往何处？${PLAIN}"
+                echo "1. 使用现有出站节点 (如已添加的 SS/Socks/直连)"
+                echo "2. 添加新的远程落地节点 (支持链接/手动)"
+                read -p "请选择: " out_src_choice
+
+                if [[ "$out_src_choice" == "1" ]]; then
+                    # 选择现有
+                    jq -r '.outbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
+                    read -p "选择序号: " idx
+                    [[ -z "$idx" ]] && continue
+                    OUT_TAG=$(jq -r ".outbounds[$((idx-1))].tag" "$CONFIG_FILE")
+                else
+                    # 创建新节点
+                    echo -e "\n${CYAN}请输入新节点分享链接 (ss:// 或 socks5://):${PLAIN}"
+                    read -p "> " RAW_LINK
+                    [[ -n "$RAW_LINK" ]] && parse_proxy_link "$RAW_LINK"
+
+                    if [[ -z "$R_ADDR" ]]; then
+                        read -p "协议 (1.SS 2.Socks5): " hop_type
+                        read -p "地址: " R_ADDR
+                        read -p "端口: " R_PORT
+                        if [[ "$hop_type" == "1" ]]; then
+                            read -p "加密: " R_METHOD; [[ -z "$R_METHOD" ]] && R_METHOD="aes-128-gcm"
+                            read -p "密码: " R_PASS
+                        else
+                            read -p "用户: " R_USER; read -p "密码: " R_PASS
+                        fi
+                    fi
+                    
+                    OUT_TAG="split-out-$(date +%s)"
+                    local NEW_OUT_JSON=""
+                    if [[ "$hop_type" == "1" ]]; then
+                        NEW_OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
+                            '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}')
+                    else
+                        NEW_OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                            '{type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"}')
+                        [[ -n "$R_USER" ]] && NEW_OUT_JSON=$(echo "$NEW_OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + {username: $u, password: $p}')
+                    fi
+                    # 先把新节点写入配置
+                    jq --argjson obj "$NEW_OUT_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+                fi
+
+                # --- 第二步：设定匹配规则 ---
+                echo -e "\n${CYAN}设置分流条件:${PLAIN}"
+                echo "1. 域名后缀 (如: google.com)"
+                echo "2. 域名关键字 (如: netflix)"
+                echo "3. IP 段 (如: 91.108.4.0/22)"
+                read -p "选择: " mt_idx
+                case $mt_idx in
+                    1) MATCH_TYPE="domain_suffix";;
+                    2) MATCH_TYPE="domain_keyword";;
+                    3) MATCH_TYPE="ip_cidr";;
+                    *) continue;;
+                esac
+
+                read -p "请输入匹配值 (多个用逗号隔开): " MATCH_VALUE
+                [[ -z "$MATCH_VALUE" ]] && continue
+
+                # --- 第三步：写入路由规则 (置顶) ---
+                local val_json=$(echo "$MATCH_VALUE" | jq -R 'split(",")' | jq -c '.')
+                RULE_JSON=$(jq -n --arg mt "$MATCH_TYPE" --arg ot "$OUT_TAG" --argjson mv "$val_json" \
+                    '{"\($mt)": $mv, "outbound": $ot}')
+
+                jq --argjson rule "$RULE_JSON" '.route.rules = [$rule] + .route.rules' "$CONFIG_FILE" > tmp.json
+                save_and_restart && echo -e "${GREEN}✔ 分流规则已生效！${PLAIN}"
+                sleep 2
+                ;;
+
+            2)
+                # --- 查看逻辑 ---
+                echo -e "\n${YELLOW}当前自定义路由规则:${PLAIN}"
+                echo "------------------------------------------------"
+                jq -r '.route.rules[] | select(.inbound == null) | 
+                    "[\(.outbound)] <- " + (if .domain_suffix then "后缀:\(.domain_suffix)" elif .domain_keyword then "关键字:\(.domain_keyword)" elif .ip_cidr then "IP段:\(.ip_cidr)" else "其他" end)' "$CONFIG_FILE" | cat -n
+                echo "------------------------------------------------"
+                read -n 1 -s -r -p "按任意键返回..."
+                ;;
+
+            3)
+                # --- 删除逻辑 ---
+                echo -e "\n${YELLOW}选择要删除的规则序号:${PLAIN}"
+                local rules_list=$(jq -c '.route.rules[] | select(.inbound == null)' "$CONFIG_FILE")
+                [[ -z "$rules_list" ]] && echo "无分流规则" && sleep 1 && continue
+                
+                echo "$rules_list" | jq -r '(.outbound) + " (" + (if .domain_suffix then "后缀" else "其他" end) + ")"' | cat -n
+                read -p "序号: " del_idx
+                [[ -z "$del_idx" ]] && continue
+
+                local target_rule=$(echo "$rules_list" | sed -n "${del_idx}p")
+                local target_tag=$(echo "$target_rule" | jq -r .outbound)
+
+                # 删除规则，并检查该出站是否是分流专用的(split-out-)，若是则一并删除
+                jq --argjson tr "$target_rule" --arg otag "$target_tag" '
+                    del(.route.rules[] | select(. == $tr)) |
+                    if ($otag | startswith("split-out-")) then 
+                        del(.outbounds[] | select(.tag == $otag)) 
+                    else . end
+                ' "$CONFIG_FILE" > tmp.json
+                save_and_restart && echo -e "${GREEN}✔ 规则及相关临时节点已清理${PLAIN}"
+                sleep 1
+                ;;
+
+            0) return ;;
+        esac
+    done
+}
+
 update_all() {
     auto_backup
     echo -e "${CYAN}请选择更新项:${PLAIN}"
@@ -624,12 +749,13 @@ while true; do
     echo "--------------------------------"
     echo "1. 安装 / 重装 sing-box"
     echo "2. 节点配置 (VLESS/TUIC/Hy2/SS/Socks)"
-    echo "3. 管理配置 (查看/修改端口/删除)"
+    echo "3. 配置管理 (查看/修改端口/删除)"
     echo "4. 链式代理设置/管理"
-    echo "5. 更新脚本或内核"
-    echo "6. 备份 / 还原"
-    echo "7. 开启 BBR 网络加速"
-    echo "8. 申请 SSL 域名证书 (ACME)"
+    echo "5. 分流规则设置/管理"
+    echo "6. 更新脚本或内核"
+    echo "7. 备份 / 还原"
+    echo "8. 开启 BBR 网络加速"
+    echo "9. 申请 SSL 域名证书 (ACME)"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -640,10 +766,11 @@ while true; do
         2) add_node ;;
         3) manage_configs ;;
         4) chain_proxy ;;
-        5) update_all ;;
-        6) backup_restore ;;
-        7) enable_bbr ;;
-        8) apply_cert ;;
+        5) manage_routing ;;
+        6) update_all ;;
+        7) backup_restore ;;
+        8) enable_bbr ;;
+        9) apply_cert ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
