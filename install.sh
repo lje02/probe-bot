@@ -437,6 +437,13 @@ parse_proxy_link() {
 }
 
 chain_proxy() {
+    local cp_choice idx LOCAL_CONF LOCAL_TAG LOCAL_PORT
+    local RAW_LINK R_ADDR R_PORT R_METHOD R_PASS R_USER hop_type
+    local OUT_TAG OUT_JSON
+    
+    # 检查依赖
+    [[ ! -x "$(command -v jq)" ]] && echo -e "${RED}错误: 未安装 jq${PLAIN}" && return
+
     echo -e "${YELLOW}--- 链式代理管理 (支持分享链接) ---${PLAIN}"
     echo "1. 添加链式转发"
     echo "2. 删除链式转发"
