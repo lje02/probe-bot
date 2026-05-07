@@ -16,59 +16,59 @@ LINK_DIR="/etc/sing-box/links"
 CERT_DIR="/etc/sing-box/certs"
 BACKUP_DIR="/root/singbox_backup"
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
-UPDATE_URL="https://raw.githubusercontent.com/lje02/sing/main/install.sh"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 运行！${PLAIN}" && exit 1
 
 # --- 辅助工具 ---
 pause() {
-    echo ""
-    read -p "操作完成，按回车键继续..."
+    echo ""
+    read -p "操作完成，按回车键继续..."
 }
 
 # --- 依赖函数：WARP 自动注册 ---
 register_warp_account() {
-    W_PRIV="" W_V4="" W_V6="" W_RES_JSON=""
-    
-    local deps=(wireguard-tools jq curl bsdmainutils) # bsdmainutils 提供 hexdump
-    for dep in "${deps[@]}"; do
-        if ! command -v "$dep" >/dev/null 2>&1; then
-            echo -e "${YELLOW}正在安装缺失依赖: $dep...${PLAIN}"
-            apt update && apt install -y "$dep"
-        fi
-    done
+    W_PRIV="" W_V4="" W_V6="" W_RES_JSON=""
+    
+    # 检查并安装依赖
+    local need_install=0
+    for dep in wireguard-tools jq curl bsdmainutils; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            need_install=1
+            break
+        fi
+    done
 
-    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
-    
-    local priv=$(wg genkey)
-    local pub=$(echo "$priv" | wg pubkey)
-    
-    # 3. 注册请求 (增加 --connect-timeout 防止卡死)
-    local response=$(curl -s --connect-timeout 10 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
-        -H "Content-Type: application/json" \
-        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+    if [ "$need_install" -eq 1 ]; then
+        echo -e "${YELLOW}正在安装必要依赖...${PLAIN}"
+        apt update && apt install -y wireguard-tools jq curl bsdmainutils
+    fi
 
-    if [[ "$response" != *"token"* ]]; then
-        echo -e "${RED}✘ WARP 注册失败，请检查网络或稍后再试${PLAIN}"
-        [[ "$response" == *"maintenance"* ]] && echo -e "${YELLOW}提示: CF API 可能正在维护${PLAIN}"
-        return 1
-    fi
+    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
+    
+    local priv=$(wg genkey)
+    local pub=$(echo "$priv" | wg pubkey)
+    
+    local response=$(curl -s --connect-timeout 10 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
+        -H "Content-Type: application/json" \
+        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
-    # 4. 提取参数
-    W_PRIV="$priv"
-    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4')
-    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6')
-    
-    # 5. 转换 Reserved 格式 (hexdump 处理)
-    W_RES_JSON=$(echo "$response" | jq -r '.config.clientId' | base64 -d | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+    if [[ "$response" != *"token"* ]]; then
+        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
+        return 1
+    fi
 
-    if [[ -z "$W_V4" || "$W_V4" == "null" ]]; then
-        echo -e "${RED}✘ 解析 WARP 账户信息失败${PLAIN}"
-        return 1
-    fi
+    W_PRIV="$priv"
+    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4')
+    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6')
+    W_RES_JSON=$(echo "$response" | jq -r '.config.clientId' | base64 -d | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
 
-    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
-    return 0
+    if [[ -z "$W_V4" || "$W_V4" == "null" ]]; then
+        echo -e "${RED}✘ 解析 WARP 账户失败${PLAIN}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
+    return 0
 }
 
 # 原子化写入配置并进行语法检查
