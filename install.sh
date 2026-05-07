@@ -32,43 +32,56 @@ register_warp_account() {
     
     # 检查并安装依赖
     local need_install=0
-    local deps_to_install=()
+    local deps_to_install  # 先声明，不初始化数组
+    deps_to_install=()      # 再初始化空数
     
     # 检查必需工具
     for dep in wireguard-tools jq curl; do
         case $dep in
             wireguard-tools)
-                command -v wg >/dev/null 2>&1 || { deps_to_install+=("$dep"); need_install=1; }
+                if ! command -v wg >/dev/null 2>&1; then
+                    deps_to_install+=("$dep")
+                    need_install=1
+                fi
                 ;;
             *)
-                command -v "$dep" >/dev/null 2>&1 || { deps_to_install+=("$dep"); need_install=1; }
+                if ! command -v "$dep" >/dev/null 2>&1; then
+                    deps_to_install+=("$dep")
+                    need_install=1
+                fi
                 ;;
         esac
     done
     
     # 检查解码工具（至少需要一个）
     if ! command -v hexdump >/dev/null 2>&1 && ! command -v xxd >/dev/null 2>&1 && ! command -v od >/dev/null 2>&1; then
-        deps_to_install+=("bsdmainutils")  # 提供 hexdump
+        deps_to_install+=("bsdmainutils")
         need_install=1
     fi
 
     if [ "$need_install" -eq 1 ]; then
         echo -e "${YELLOW}正在安装必要依赖: ${deps_to_install[*]}...${PLAIN}"
         apt update >/dev/null 2>&1
-        apt install -y "${deps_to_install[@]}" 2>/dev/null || {
+        if ! apt install -y "${deps_to_install[@]}" 2>/dev/null; then
             echo -e "${RED}✘ 依赖安装失败${PLAIN}"
             return 1
-        }
+        fi
     fi
 
     echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
     
     # 生成密钥对
     local priv=$(wg genkey 2>/dev/null)
-    [[ -z "$priv" ]] && { echo -e "${RED}✘ 无法生成 WireGuard 密钥${PLAIN}"; return 1; }
+    if [[ -z "$priv" ]]; then
+        echo -e "${RED}✘ 无法生成 WireGuard 密钥${PLAIN}"
+        return 1
+    fi
     
     local pub=$(echo "$priv" | wg pubkey 2>/dev/null)
-    [[ -z "$pub" ]] && { echo -e "${RED}✘ 无法生成公钥${PLAIN}"; return 1; }
+    if [[ -z "$pub" ]]; then
+        echo -e "${RED}✘ 无法生成公钥${PLAIN}"
+        return 1
+    fi
     
     # 请求 WARP 注册
     local response=$(curl -s --connect-timeout 10 -m 15 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
@@ -92,11 +105,11 @@ register_warp_account() {
     W_V4=$(echo "$response" | jq -r '.config.interface.addresses.v4 // .config.interface.address.v4 // "172.16.0.2/32"')
     W_V6=$(echo "$response" | jq -r '.config.interface.addresses.v6 // .config.interface.address.v6 // "2606:4700:110:8a2c:9c7d:ce0:3df7:d993/128"')
     
-    # 转换 Reserved 格式（智能选择可用的解码工具）
+    # 转换 Reserved 格式
     local cid=$(echo "$response" | jq -r '.config.clientId // .config.client_id // empty')
     
     if [[ -n "$cid" && "$cid" != "null" ]]; then
-        # 方法1：优先使用 hexdump（最可靠）
+        # 方法1：优先使用 hexdump
         if command -v hexdump >/dev/null 2>&1; then
             W_RES_JSON="[$(echo "$cid" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' | sed 's/,$//')]"
             
@@ -104,11 +117,11 @@ register_warp_account() {
         elif command -v xxd >/dev/null 2>&1; then
             W_RES_JSON="[$(echo "$cid" | base64 -d 2>/dev/null | xxd -p | fold -w2 | while read hex; do printf "%d," "0x$hex"; done | sed 's/,$//')]"
             
-        # 方法3：最后使用 od（所有Unix都有）
+        # 方法3：最后使用 od
         elif command -v od >/dev/null 2>&1; then
             W_RES_JSON="[$(echo "$cid" | base64 -d 2>/dev/null | od -An -tu1 -v | awk '{for(i=1;i<=NF;i++) printf "%d,", $i}' | sed 's/,$//')]"
             
-        # 方法4：都没有就用默认值
+        # 方法4：默认值
         else
             W_RES_JSON="[0,0,0]"
         fi
@@ -117,7 +130,9 @@ register_warp_account() {
     fi
     
     # 验证格式
-    [[ ! "$W_RES_JSON" =~ ^\[[0-9]+(,[0-9]+)*\]$ ]] && W_RES_JSON="[0,0,0]"
+    if [[ ! "$W_RES_JSON" =~ ^\[[0-9]+(,[0-9]+)*\]$ ]]; then
+        W_RES_JSON="[0,0,0]"
+    fi
 
     # 最终检查
     if [[ -z "$W_V4" ]]; then
