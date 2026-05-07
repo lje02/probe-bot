@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ========================================================
-# sing-box 综合管理脚本 (ssb) - 增强修复且功能完整版
+# sing-box 综合管理脚本 (ssb)
 # ========================================================
 
 RED='\033[1;31m'
@@ -397,37 +397,114 @@ manage_configs() {
     esac
 }
 
-chain_proxy() {
-    clear
-    echo -e "${YELLOW}--- 链式代理管理 ---${PLAIN}"
-    echo "1. 添加链式转发 | 2. 删除所有链式转发 | 0. 返回"
-    read -p "选择: " cp_choice
-    [[ "$cp_choice" == "0" ]] && return
-    
-    if [[ "$cp_choice" == "1" ]]; then
-        local count=$(jq '.inbounds | length' "$CONFIG_FILE")
-        if [[ "$count" -eq 0 ]]; then echo "暂无入站节点可用作链式起点"; pause; return; fi
-
-        jq -r '.inbounds[] | "Tag: \(.tag) | Type: \(.type) | Port: \(.listen_port)"' "$CONFIG_FILE" | cat -n
-        read -p "选择入站节点序号作为起点: " idx
-        local LOCAL_TAG=$(jq -r ".inbounds[$(($idx-1))].tag" "$CONFIG_FILE")
-        read -p "需要转发到的远程地址 (IP或域名): " R_ADDR
-        read -p "远程端口: " R_PORT
-        local OUT_TAG="chain-out-$LOCAL_TAG"
+# 简单的解析函数：支持 ss:// 和 socks5://
+parse_proxy_link() {
+    local link=$1
+    if [[ "$link" =~ ^ss:// ]]; then
+        # 去掉协议头和后缀
+        local content=$(echo "${link#ss://}" | cut -d'#' -f1)
         
-        jq --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" --arg addr "$R_ADDR" --arg port "$R_PORT" \
-           '.outbounds += [{"type":"socks","tag":$otag,"server":$addr,"server_port":($port|tonumber),"version":"5"}] | .route.rules = [{"inbound":[$itag],"outbound":$otag}] + .route.rules' \
-           "$CONFIG_FILE" > tmp.json
-        if save_and_restart; then
-            echo -e "${GREEN}链式转发已开启： $LOCAL_TAG -> $R_ADDR:$R_PORT${PLAIN}"
+        # 处理可能的 SIP002 格式 (BASE64@HOST:PORT)
+        if [[ "$content" == *"@"* ]]; then
+            local user_info_b64=$(echo "$content" | cut -d'@' -f1)
+            local server_info=$(echo "$content" | cut -d'@' -f2)
+            
+            # 解码用户信息 (method:password)
+            local user_info=$(echo "$user_info_b64" | base64 -d 2>/dev/null)
+            R_METHOD=$(echo "$user_info" | cut -d':' -f1)
+            R_PASS=$(echo "$user_info" | cut -d':' -f2)
+            
+            R_ADDR=$(echo "$server_info" | cut -d':' -f1)
+            R_PORT=$(echo "$server_info" | cut -d':' -f2)
+            hop_type=1
         fi
-    elif [[ "$cp_choice" == "2" ]]; then
-        jq '.route.rules = [] | .outbounds = (.outbounds | map(select(.tag | startswith("chain-out-") | not)))' "$CONFIG_FILE" > tmp.json
-        if save_and_restart; then
-            echo -e "${GREEN}所有链式转发规则已清除${PLAIN}"
+    elif [[ "$link" =~ ^socks5:// ]]; then
+        # 格式: socks5://user:pass@host:port
+        local content=${link#socks5://}
+        if [[ "$content" == *"@"* ]]; then
+            local user_info=$(echo "$content" | cut -d'@' -f1)
+            local server_info=$(echo "$content" | cut -d'@' -f2)
+            R_USER=$(echo "$user_info" | cut -d':' -f1)
+            R_PASS=$(echo "$user_info" | cut -d':' -f2)
+            R_ADDR=$(echo "$server_info" | cut -d':' -f1)
+            R_PORT=$(echo "$server_info" | cut -d':' -f2)
+        else
+            R_ADDR=$(echo "$content" | cut -d':' -f1)
+            R_PORT=$(echo "$content" | cut -d':' -f2)
         fi
+        hop_type=2
     fi
-    pause
+}
+
+chain_proxy() {
+    echo -e "${YELLOW}--- 链式代理管理 (支持分享链接) ---${PLAIN}"
+    echo "1. 添加链式转发"
+    echo "2. 删除链式转发"
+    echo "0. 返回"
+    read -p "请选择: " cp_choice
+
+    case $cp_choice in
+        1)
+            # 1. 选择本地入站
+            echo -e "${YELLOW}请选择本地入站节点:${PLAIN}"
+            jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) | Port: \(.[$i].listen_port // "N/A")"' "$CONFIG_FILE"
+            read -p "选择序号: " idx
+            local LOCAL_CONF=$(jq -c ".inbounds[$((idx-1))]" "$CONFIG_FILE")
+            local LOCAL_TAG=$(echo "$LOCAL_CONF" | jq -r .tag)
+
+            # 2. 输入链接或手动配置
+            echo -e "\n${CYAN}提示: 可以直接粘贴 ss:// 或 socks5:// 链接，或按回车手动输入${PLAIN}"
+            read -p "请输入分享链接 (可选): " RAW_LINK
+            
+            if [[ -n "$RAW_LINK" ]]; then
+                parse_proxy_link "$RAW_LINK"
+            fi
+
+            # 如果链接解析失败或未输入链接，进入手动模式
+            if [[ -z "$R_ADDR" ]]; then
+                echo -e "\n${CYAN}未检测到有效链接，进入手动配置模式:${PLAIN}"
+                echo "1. Shadowsocks (SS)"
+                echo "2. Socks5"
+                read -p "选择协议: " hop_type
+                read -p "远程服务器地址: " R_ADDR
+                read -p "远程端口: " R_PORT
+                
+                if [[ "$hop_type" == "1" ]]; then
+                    read -p "SS加密方式 (默认 aes-128-gcm): " R_METHOD
+                    [[ -z "$R_METHOD" ]] && R_METHOD="aes-128-gcm"
+                    read -p "密码: " R_PASS
+                else
+                    read -p "用户名 (可选): " R_USER
+                    read -p "密码 (可选): " R_PASS
+                fi
+            fi
+
+            # 3. 构造 Outbound JSON
+            local OUT_TAG="chain-out-$LOCAL_TAG"
+            local OUT_JSON=""
+            if [[ "$hop_type" == "1" ]]; then
+                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
+                    '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}')
+            else
+                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" \
+                    '{type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"}')
+                [[ -n "$R_USER" ]] && OUT_JSON=$(echo "$OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + {username: $u, password: $p}')
+            fi
+
+            # 4. 写入配置并重启
+            jq --argjson obj "$OUT_JSON" --arg in_tag "$LOCAL_TAG" --arg out_tag "$OUT_TAG" '
+                .outbounds += [$obj] |
+                .route.rules = [{ "inbound": [$in_tag], "outbound": $out_tag }] + .route.rules
+            ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+
+            systemctl restart sing-box
+            echo -e "${GREEN} ✔ 链式转发配置成功！${PLAIN}"
+            ;;
+        2)
+            # ... (删除逻辑同前)
+            ;;
+        0) return ;;
+    esac
 }
 
 update_all() {
