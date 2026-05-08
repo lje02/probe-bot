@@ -761,7 +761,8 @@ while true; do
     echo "--------------------------------"
     echo "1. 安装 / 重装 sing-box"
     echo "2. 节点配置 (VLESS/TUIC/Hy2/SS/Socks/WS_CF)"
-    echo "3. 管理配置 (查看/修改端口/删除)"
+    echo "3. 节点管理 (查看/修改端口/删除)"
+    echo "4. 链式转发设置/管理"
     echo "5. 分流设置/落地/管理"
     echo "6. 更新脚本或内核"
     echo "7. 备份 / 还原"
@@ -776,6 +777,7 @@ while true; do
         1) install_base ;;
         2) add_node ;;
         3) manage_configs ;;
+        4) chain_proxy;;
         5) manage_routing;;
         6) update_all ;;
         7) backup_restore ;;
