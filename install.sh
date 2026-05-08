@@ -577,6 +577,7 @@ chain_proxy() {
     done
 }
 
+# --- 网站分流/路由管理 ---
 manage_routing() {
     local rt_choice IN_TAGS OUT_TAG OUT_JSON RULE_JSON
     
@@ -585,7 +586,7 @@ manage_routing() {
         echo -e "${YELLOW}--- 网站分流/路由管理 ---${PLAIN}"
         echo "1. 添加分流规则 (入站 + 目标 -> 指定出站)"
         echo "2. 查看当前分流规则"
-        echo "3. 删除特定分流规则"
+        echo "3. 删除特定分流规则 (可单选/多选/全删)"
         echo "0. 返回主菜单"
         echo "------------------------------------------------"
         read -p "请选择: " rt_choice
@@ -607,7 +608,7 @@ manage_routing() {
                     IN_TAGS=$(echo "$in_idxs" | tr ',' '\n' | while read -r i; do jq -r ".inbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s .)
                 fi
 
-                # --- 第二步：选择匹配目标 (你的目标网站代码在此) ---
+                # --- 第二步：选择匹配目标 ---
                 echo -e "\n${CYAN}2. 请选择匹配的目标网站/IP:${PLAIN}"
                 echo "1) 全部流量 (不限目标)"
                 echo "2) 域名匹配 (例如: google.com, youtube.com)"
@@ -631,12 +632,12 @@ manage_routing() {
                         RULE_PART="\"ip_cidr\": $val_json," ;;
                 esac
 
-                # --- 第三步：配置转发出的出站 (自动选择/负载均衡在此) ---
+                # --- 第三步：配置转发出的出站 ---
                 echo -e "\n${CYAN}3. 请配置转发的目标出站节点:${PLAIN}"
                 echo "1) 粘贴分享链接 (SS / Socks5)"
                 echo "2) 手动输入配置 (SS / Socks5 / HTTPS)"
                 echo "3) 自动选择 (URL-Test - 自动切换低延迟)"
-                echo "4) 负载均衡 (Load-Balance - 轮询)"
+                echo "4) 负载均衡 (Load-Balance - 轮询分摊)"
                 read -p "请选择 [1-4]: " out_mode
 
                 R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""; OUT_JSON=""
@@ -644,17 +645,18 @@ manage_routing() {
                 if [[ "$out_mode" == "1" ]]; then
                     read -p "请输入链接: " RAW_LINK
                     parse_proxy_link "$RAW_LINK"
+                    [[ -z "$R_ADDR" ]] && echo -e "${RED}链接解析失败！${PLAIN}" && pause && continue
                 elif [[ "$out_mode" == "2" ]]; then
                     echo -e "协议: 1) SS  2) Socks5  3) HTTPS"
                     read -p "选择: " hop_type
                     read -p "地址: " R_ADDR
                     read -p "端口: " R_PORT
                     case $hop_type in
-                        1) read -p "加密: " R_METHOD; read -p "密码: " R_PASS ;;
-                        2|3) read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
+                        1) read -p "加密方式: " R_METHOD; read -p "密码: " R_PASS ;;
+                        2|3) read -p "用户名 (可选): " R_USER; read -p "密码 (可选): " R_PASS ;;
                     esac
                 elif [[ "$out_mode" == "3" || "$out_mode" == "4" ]]; then
-                    echo -e "\n选择节点成员 (多选用逗号):"
+                    echo -e "\n选择节点成员 (一次可输入多个序号，用逗号隔开):"
                     jq -r '.outbounds | keys[] as $i | "\($i+1)) \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
                     read -p "选择序号: " member_idxs
                     [[ -z "$member_idxs" ]] && continue
@@ -663,11 +665,11 @@ manage_routing() {
                     if [[ "$out_mode" == "3" ]]; then
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"urltest",tag:$t,outbounds:$m,url:"https://www.gstatic.com/generate_204",interval:"3m0s"}')
                     else
-                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"selector",tag:$t,outbounds:$m}')
+                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"selector",tag:$t,outbounds:$m,strategy:"round-robin"}')
                     fi
                 fi
 
-                # --- 第四步：生成并写入配置 ---
+                # --- 第四步：构造 JSON 并写入 ---
                 if [[ -z "$OUT_JSON" ]]; then
                     OUT_TAG="route-out-$(date +%s)"
                     if [[ "$hop_type" == "1" || -n "$R_METHOD" ]]; then
@@ -683,25 +685,28 @@ manage_routing() {
                 [[ "$IN_TAGS" == "null" ]] && RULE_JSON=$(echo "$base_rule" | jq -c .) || RULE_JSON=$(echo "$base_rule" | jq --argjson itags "$IN_TAGS" -c '. + {"inbound": $itags}')
 
                 jq --argjson out_obj "$OUT_JSON" --argjson rule_obj "$RULE_JSON" '.outbounds += [$out_obj] | .route.rules = [$rule_obj] + .route.rules' "$CONFIG_FILE" > tmp.json
-                save_and_restart && echo -e "${GREEN}✔ 规则已添加！${PLAIN}"
+                save_and_restart && echo -e "${GREEN}✔ 分流规则已成功添加！${PLAIN}"
                 pause
                 ;;
 
             2)
                 echo -e "\n${CYAN}当前分流规则列表:${PLAIN}"
+                echo "------------------------------------------------"
                 jq -r '.route.rules | keys[] as $i | "\($i+1)) [来源]:\(.[$i].inbound // "全部") | [目标]:\(if .[$i].domain then "域名" elif .[$i].geosite then "GeoSite" elif .[$i].ip_cidr then "IP" else "全部" end) -> [出站]:\(.[$i].outbound)"' "$CONFIG_FILE"
+                echo "------------------------------------------------"
                 pause
                 ;;
 
             3)
-                echo -e "\n${YELLOW}选择要删除的规则序号 (全部清除输入 all):${PLAIN}"
-                jq -r '.route.rules | keys[] as $i | "\($i+1)) 来源:\(.[$i].inbound // "全部") -> 目标:\(.[$i].outbound)"' "$CONFIG_FILE"
-                read -p "> " del_choice
+                echo -e "\n${YELLOW}选择要删除的规则序号:${PLAIN}"
+                jq -r '.route.rules | keys[] as $i | "\($i+1)) [入站]:\(.[$i].inbound // "全部") -> [目标出站]:\(.[$i].outbound)"' "$CONFIG_FILE"
+                read -p "序号 (多选用逗号, 全部清除输入 all): " del_choice
                 if [[ "$del_choice" == "all" ]]; then
                     jq '.route.rules = [] | .outbounds |= map(select(.tag | (startswith("route-out-") or startswith("group-out-")) | not))' "$CONFIG_FILE" > tmp.json
                 elif [[ -n "$del_choice" ]]; then
                     local jq_idxs=$(echo "$del_choice" | tr ',' '\n' | awk '{print $1-1}' | jq -R . | jq -s . | jq -c 'sort | reverse')
                     jq --argjson idxs "$jq_idxs" 'del(.route.rules[$idxs[]])' "$CONFIG_FILE" > tmp_stage.json
+                    # 清理脚本生成的且不再被引用的临时节点
                     jq '.outbounds |= map(select(((.tag | (startswith("route-out-") or startswith("group-out-"))) | not) or (.tag as $t | any(.route.rules[]; .outbound == $t))))' tmp_stage.json > tmp.json
                     rm -f tmp_stage.json
                 fi
