@@ -577,7 +577,6 @@ chain_proxy() {
     done
 }
 
-# --- 网站分流/路由管理 ---
 manage_routing() {
     local rt_choice IN_TAGS OUT_TAG OUT_JSON RULE_JSON
     
@@ -593,13 +592,11 @@ manage_routing() {
 
         case $rt_choice in
             1)
-                # --- 第一步：选择来源入站 ---
+                # --- 1. 选择来源入站 ---
                 echo -e "\n${CYAN}1. 请选择来源入站:${PLAIN}"
                 local in_count=$(jq '.inbounds | length' "$CONFIG_FILE")
-                if [[ "$in_count" -eq 0 ]]; then
-                    echo -e "${RED}错误：配置文件中没有入站(Inbound)配置。${PLAIN}"
-                    pause && continue
-                fi
+                [[ "$in_count" -eq 0 ]] && echo -e "${RED}无入站配置！${PLAIN}" && pause && continue
+                
                 jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
                 read -p "选择序号 (多选用逗号, 直接回车代表全部): " in_idxs
                 if [[ -z "$in_idxs" ]]; then
@@ -608,88 +605,85 @@ manage_routing() {
                     IN_TAGS=$(echo "$in_idxs" | tr ',' '\n' | while read -r i; do jq -r ".inbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s . -c)
                 fi
 
-                # --- 第二步：选择匹配目标 ---
-                echo -e "\n${CYAN}2. 请选择匹配的目标网站/IP:${PLAIN}"
+                # --- 2. 选择匹配目标 ---
+                echo -e "\n${CYAN}2. 请选择匹配的目标:${PLAIN}"
                 echo "1) 全部流量"
                 echo "2) 域名匹配"
                 echo "3) GeoSite 预设"
                 echo "4) IP / CIDR 匹配"
-                read -p "请选择 [1-4]: " target_type
+                read -p "选择 [1-4]: " target_type
                 
-                local RULE_PART=""
+                local TARGET_VAL="[]"
+                local TARGET_KEY=""
                 case $target_type in
-                    2) read -p "输入域名 (用逗号隔开): " val; RULE_PART="\"domain\": $(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)," ;;
-                    3) read -p "输入 GeoSite (如 openai,telegram): " val; RULE_PART="\"geosite\": $(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)," ;;
-                    4) read -p "输入 IP/CIDR (如 1.1.1.1,8.8.8.0/24): " val; RULE_PART="\"ip_cidr\": $(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)," ;;
+                    2) read -p "输入域名 (逗号隔开): " val; TARGET_KEY="domain"; TARGET_VAL=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c) ;;
+                    3) read -p "输入 GeoSite (如 openai): " val; TARGET_KEY="geosite"; TARGET_VAL=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c) ;;
+                    4) read -p "输入 IP/CIDR: " val; TARGET_KEY="ip_cidr"; TARGET_VAL=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c) ;;
                 esac
 
-                # --- 第三步：配置出站 (修复负载均衡语法) ---
-                echo -e "\n${CYAN}3. 请配置转发的目标出站节点:${PLAIN}"
-                echo "1) 粘贴分享链接 (SS / Socks5)"
-                echo "2) 手动输入配置 (SS / Socks5 / HTTPS)"
-                echo "3) 自动选择 (URL-Test - 切换低延迟)"
-                echo "4) 负载均衡 (Load-Balance - 轮询)"
-                read -p "请选择 [1-4]: " out_mode
+                # --- 3. 配置出站节点 ---
+                echo -e "\n${CYAN}3. 请配置目标出站:${PLAIN}"
+                echo "1) 粘贴链接 (SS/Socks5)"
+                echo "2) 手动输入 (SS/Socks5/HTTPS)"
+                echo "3) 自动选择 (URL-Test)"
+                echo "4) 负载均衡 (Round-Robin)"
+                read -p "选择 [1-4]: " out_mode
 
                 OUT_JSON=""
+                OUT_TAG="route-out-$(date +%s)"
+
                 if [[ "$out_mode" == "1" ]]; then
-                    R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER="";
+                    R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; 
                     read -p "请输入链接: " RAW_LINK
                     parse_proxy_link "$RAW_LINK"
                     [[ -z "$R_ADDR" ]] && echo -e "${RED}解析失败！${PLAIN}" && pause && continue
-                    OUT_TAG="route-out-$(date +%s)"
-                    # 构造基础出站
                     OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
                         '{type:"shadowsocks",tag:$t,server:$s,server_port:($p|tonumber),method:$m,password:$pass}')
                 elif [[ "$out_mode" == "2" ]]; then
-                    R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER="";
-                    echo -e "协议: 1) SS  2) Socks5  3) HTTPS"
-                    read -p "选择: " hop_type
+                    echo -e "协议: 1) SS 2) Socks5 3) HTTPS"
+                    read -p "选择: " h_type
                     read -p "地址: " R_ADDR; read -p "端口: " R_PORT
-                    OUT_TAG="route-out-$(date +%s)"
-                    case $hop_type in
+                    case $h_type in
                         1) read -p "加密: " R_METHOD; read -p "密码: " R_PASS; OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" '{type:"shadowsocks",tag:$t,server:$s,server_port:($p|tonumber),method:$m,password:$pass}') ;;
                         2) read -p "用户: " R_USER; read -p "密码: " R_PASS; OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" '{type:"socks",tag:$t,server:$s,server_port:($p|tonumber),version:"5"} + (if $u != "" then {username:$u,password:$pass} else {} end)') ;;
                         3) read -p "用户: " R_USER; read -p "密码: " R_PASS; OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" '{type:"http",tag:$t,server:$s,server_port:($p|tonumber),tls:{enabled:true}} + (if $u != "" then {username:$u,password:$pass} else {} end)') ;;
                     esac
                 elif [[ "$out_mode" == "3" || "$out_mode" == "4" ]]; then
-                    echo -e "\n${YELLOW}请选择要加入组的代理成员 (输入序号，多选用逗号):${PLAIN}"
-                    # 仅显示非系统节点
-                    jq -r '.outbounds | keys[] as $i | select(.[$i].type != "direct" and .[$i].type != "dns") | "\($i+1)) [\(.[$i].type)] \(.[$i].tag)"' "$CONFIG_FILE"
-                    read -p "选择序号: " member_idxs
+                    echo -e "\n${YELLOW}选择代理成员 (多选用逗号):${PLAIN}"
+                    jq -r '.outbounds | keys[] as $i | select(.[$i].type != "direct" and .[$i].type != "dns" and .[$i].type != "block") | "\($i+1)) [\(.[$i].type)] \(.[$i].tag)"' "$CONFIG_FILE"
+                    read -p "序号: " member_idxs
                     [[ -z "$member_idxs" ]] && continue
                     
                     MEMBER_TAGS=$(echo "$member_idxs" | tr ',' '\n' | while read -r i; do jq -r ".outbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s . -c)
                     OUT_TAG="group-out-$(date +%s)"
-                    
                     if [[ "$out_mode" == "3" ]]; then
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"urltest",tag:$t,outbounds:$m,url:"https://www.gstatic.com/generate_204",interval:"3m0s"}')
                     else
-                        # 负载均衡修正：使用 selector + round-robin 策略
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"selector",tag:$t,outbounds:$m,strategy:"round-robin"}')
                     fi
                 fi
 
-                # --- 第四步：写入并重启 ---
-                # 生成 Rule JSON
-                local base_rule="{$RULE_PART \"outbound\": \"$OUT_TAG\"}"
-                [[ "$IN_TAGS" == "null" ]] && RULE_JSON=$(echo "$base_rule" | jq -c .) || RULE_JSON=$(echo "$base_rule" | jq --argjson itags "$IN_TAGS" -c '. + {"inbound": $itags}')
+                # --- 4. 构造最终规则并原子写入 ---
+                # 使用 jq 动态生成规则，避免手动拼接字符串导致逗号错误
+                RULE_JSON=$(jq -n --arg otag "$OUT_TAG" --arg k "$TARGET_KEY" --argjson v "$TARGET_VAL" --argjson itags "$IN_TAGS" \
+                    '{} | if $itags != null then . + {inbound: $itags} else . end | if $k != "" then . + {($k): $v} else . end | . + {outbound: $otag}')
 
-                # 原子化写入
                 jq --argjson out_obj "$OUT_JSON" --argjson rule_obj "$RULE_JSON" \
                    '.outbounds += [$out_obj] | .route.rules = [$rule_obj] + .route.rules' "$CONFIG_FILE" > tmp.json
                 
-                save_and_restart && echo -e "${GREEN}✔ 规则已成功添加！${PLAIN}"
-                pause
-                ;;
+                if save_and_restart; then
+                    echo -e "${GREEN}✔ 规则添加成功！${PLAIN}"
+                else
+                    echo -e "${RED}✘ 语法检查失败，请检查节点标签是否存在引用冲突。${PLAIN}"
+                fi
+                pause ;;
 
             2)
-                echo -e "\n${CYAN}当前分流规则列表:${PLAIN}"
-                jq -r '.route.rules | keys[] as $i | "\($i+1)) [来源]:\(.[$i].inbound // "全部") -> [转发]:\(.[$i].outbound)"' "$CONFIG_FILE"
+                echo -e "\n${CYAN}当前分流规则:${PLAIN}"
+                jq -r '.route.rules | keys[] as $i | "\($i+1)) [来源]:\(.[$i].inbound // "全部") -> [目标出站]:\(.[$i].outbound)"' "$CONFIG_FILE"
                 pause ;;
             3)
-                # 删除逻辑包含清理功能
-                echo -e "\n${YELLOW}输入要删除的规则序号:${PLAIN}"
+                echo -e "\n${YELLOW}删除规则序号 (all 代表全部):${PLAIN}"
                 jq -r '.route.rules | keys[] as $i | "\($i+1)) \(.[$i].inbound // "全部") -> \(.[$i].outbound)"' "$CONFIG_FILE"
                 read -p "> " del_choice
                 if [[ "$del_choice" == "all" ]]; then
@@ -700,7 +694,7 @@ manage_routing() {
                     jq '.outbounds |= map(select(((.tag | (startswith("route-out-") or startswith("group-out-"))) | not) or (.tag as $t | any(.route.rules[]; .outbound == $t))))' tmp_stage.json > tmp.json
                     rm -f tmp_stage.json
                 fi
-                save_and_restart && echo -e "${GREEN}✔ 规则已更新${PLAIN}"
+                save_and_restart && echo -e "${GREEN}✔ 已更新配置${PLAIN}"
                 pause ;;
             0) return 0 ;;
         esac
