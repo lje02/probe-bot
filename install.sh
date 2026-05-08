@@ -586,20 +586,21 @@ manage_routing() {
         echo -e "${YELLOW}--- 网站分流/路由管理 ---${PLAIN}"
         echo "1. 添加分流规则 (入站 + 目标 -> 指定出站)"
         echo "2. 查看当前分流规则"
-        echo "3. 删除特定分流规则 (可单选/多选/全删)"
+        echo "3. 删除特定分流规则"
         echo "0. 返回主菜单"
         echo "------------------------------------------------"
         read -p "请选择: " rt_choice
 
         case $rt_choice in
             1)
-                # --- 第一步：选择来源入站 ---
-                echo -e "\n${CYAN}1. 请选择来源入站:${PLAIN}"
+                # --- 第一步：选择来源入站 (这里只列出 inbounds) ---
+                echo -e "\n${CYAN}1. 请选择来源入站 (流量从哪进入):${PLAIN}"
                 local in_count=$(jq '.inbounds | length' "$CONFIG_FILE")
                 if [[ "$in_count" -eq 0 ]]; then
                     echo -e "${RED}错误：本地没有入站配置。${PLAIN}"
                     pause && continue
                 fi
+                # 精准只显示 inbounds
                 jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
                 read -p "选择序号 (多选用逗号, 直接回车代表全部): " in_idxs
                 if [[ -z "$in_idxs" ]]; then
@@ -610,34 +611,25 @@ manage_routing() {
 
                 # --- 第二步：选择匹配目标 ---
                 echo -e "\n${CYAN}2. 请选择匹配的目标网站/IP:${PLAIN}"
-                echo "1) 全部流量 (不限目标)"
-                echo "2) 域名匹配 (例如: google.com, youtube.com)"
-                echo "3) GeoSite 预设 (例如: openai, telegram, netflix)"
-                echo "4) IP / CIDR 匹配 (例如: 1.1.1.1, 8.8.8.0/24)"
-                read -p "请选择 [1-4]: " target_type
+                echo "1) 全部流量"
+                echo "2) 域名匹配"
+                echo "3) GeoSite 预设"
+                echo "4) IP / CIDR 匹配"
+                read -p "选择 [1-4]: " target_type
                 
                 local RULE_PART=""
                 case $target_type in
-                    2) 
-                        read -p "请输入域名 (多个用逗号隔开): " val
-                        local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
-                        RULE_PART="\"domain\": $val_json," ;;
-                    3) 
-                        read -p "请输入 GeoSite 名称 (如 openai,telegram): " val
-                        local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
-                        RULE_PART="\"geosite\": $val_json," ;;
-                    4) 
-                        read -p "请输入 IP 或 CIDR (多个用逗号隔开): " val
-                        local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
-                        RULE_PART="\"ip_cidr\": $val_json," ;;
+                    2) read -p "域名 (逗号隔开): " val; RULE_PART="\"domain\": $(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)," ;;
+                    3) read -p "GeoSite (如 openai,telegram): " val; RULE_PART="\"geosite\": $(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)," ;;
+                    4) read -p "IP/CIDR (逗号隔开): " val; RULE_PART="\"ip_cidr\": $(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)," ;;
                 esac
 
                 # --- 第三步：配置转发出的出站 ---
                 echo -e "\n${CYAN}3. 请配置转发的目标出站节点:${PLAIN}"
                 echo "1) 粘贴分享链接 (SS / Socks5)"
                 echo "2) 手动输入配置 (SS / Socks5 / HTTPS)"
-                echo "3) 自动选择 (URL-Test - 自动切换低延迟)"
-                echo "4) 负载均衡 (Load-Balance - 轮询分摊)"
+                echo "3) 自动选择 (URL-Test)"
+                echo "4) 负载均衡 (Load-Balance)"
                 read -p "请选择 [1-4]: " out_mode
 
                 R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""; OUT_JSON=""
@@ -645,22 +637,30 @@ manage_routing() {
                 if [[ "$out_mode" == "1" ]]; then
                     read -p "请输入链接: " RAW_LINK
                     parse_proxy_link "$RAW_LINK"
-                    [[ -z "$R_ADDR" ]] && echo -e "${RED}链接解析失败！${PLAIN}" && pause && continue
+                    [[ -z "$R_ADDR" ]] && echo -e "${RED}解析失败！${PLAIN}" && pause && continue
                 elif [[ "$out_mode" == "2" ]]; then
                     echo -e "协议: 1) SS  2) Socks5  3) HTTPS"
                     read -p "选择: " hop_type
                     read -p "地址: " R_ADDR
                     read -p "端口: " R_PORT
                     case $hop_type in
-                        1) read -p "加密方式: " R_METHOD; read -p "密码: " R_PASS ;;
-                        2|3) read -p "用户名 (可选): " R_USER; read -p "密码 (可选): " R_PASS ;;
+                        1) read -p "加密: " R_METHOD; read -p "密码: " R_PASS ;;
+                        2|3) read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
                     esac
                 elif [[ "$out_mode" == "3" || "$out_mode" == "4" ]]; then
-                    echo -e "\n选择节点成员 (一次可输入多个序号，用逗号隔开):"
-                    jq -r '.outbounds | keys[] as $i | "\($i+1)) \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
+                    # 【核心修正】：这里只列出 outbounds，且排除掉自动生成的组，防止死循环
+                    echo -e "\n${YELLOW}请从以下【出站节点】中选择成员 (多选用逗号):${PLAIN}"
+                    # 过滤逻辑：只显示类型不是 urltest 或 selector 的基础出站节点（或者根据你的需求显示全部出站）
+                    jq -r '.outbounds | keys[] as $i | "\($i+1)) [\(.[$i].type)] \(.[$i].tag)"' "$CONFIG_FILE"
+                    
                     read -p "选择序号: " member_idxs
                     [[ -z "$member_idxs" ]] && continue
-                    MEMBER_TAGS=$(echo "$member_idxs" | tr ',' '\n' | while read -r i; do jq -r ".outbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s . -c)
+                    
+                    # 重新从 outbounds 数组中提取标签
+                    MEMBER_TAGS=$(echo "$member_idxs" | tr ',' '\n' | while read -r i; do 
+                        jq -r ".outbounds[$((i-1))].tag" "$CONFIG_FILE"
+                    done | jq -R . | jq -s . -c)
+                    
                     OUT_TAG="group-out-$(date +%s)"
                     if [[ "$out_mode" == "3" ]]; then
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"urltest",tag:$t,outbounds:$m,url:"https://www.gstatic.com/generate_204",interval:"3m0s"}')
@@ -669,7 +669,7 @@ manage_routing() {
                     fi
                 fi
 
-                # --- 第四步：构造 JSON 并写入 ---
+                # --- 第四步：写入配置 ---
                 if [[ -z "$OUT_JSON" ]]; then
                     OUT_TAG="route-out-$(date +%s)"
                     if [[ "$hop_type" == "1" || -n "$R_METHOD" ]]; then
@@ -685,7 +685,7 @@ manage_routing() {
                 [[ "$IN_TAGS" == "null" ]] && RULE_JSON=$(echo "$base_rule" | jq -c .) || RULE_JSON=$(echo "$base_rule" | jq --argjson itags "$IN_TAGS" -c '. + {"inbound": $itags}')
 
                 jq --argjson out_obj "$OUT_JSON" --argjson rule_obj "$RULE_JSON" '.outbounds += [$out_obj] | .route.rules = [$rule_obj] + .route.rules' "$CONFIG_FILE" > tmp.json
-                save_and_restart && echo -e "${GREEN}✔ 分流规则已成功添加！${PLAIN}"
+                save_and_restart && echo -e "${GREEN}✔ 规则已成功添加！${PLAIN}"
                 pause
                 ;;
 
