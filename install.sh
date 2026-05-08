@@ -583,7 +583,7 @@ manage_routing() {
     while true; do
         clear
         echo -e "${YELLOW}--- 网站分流/路由管理 ---${PLAIN}"
-        echo "1. 添加分流规则 (入站 -> 指定出站)"
+        echo "1. 添加分流规则 (入站 + 目标 -> 指定出站)"
         echo "2. 查看当前分流规则"
         echo "3. 删除特定分流规则"
         echo "0. 返回主菜单"
@@ -592,120 +592,117 @@ manage_routing() {
 
         case $rt_choice in
             1)
-                # --- 第一步：选择入站 ---
-                echo -e "\n${CYAN}1. 请选择要分流的本地入站:${PLAIN}"
+                # --- 第一步：选择入站 (Inbound) ---
+                echo -e "\n${CYAN}1. 请选择来源入站:${PLAIN}"
                 local in_count=$(jq '.inbounds | length' "$CONFIG_FILE")
                 if [[ "$in_count" -eq 0 ]]; then
-                    echo -e "${RED}错误：本地没有任何入站配置，请先添加节点。${PLAIN}"
+                    echo -e "${RED}错误：本地没有任何入站配置。${PLAIN}"
                     pause && continue
                 fi
                 jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
-                read -p "选择序号 (多选用逗号隔开, 直接回车代表全部): " in_idxs
-                
+                read -p "选择序号 (多选用逗号, 回车代表全部): " in_idxs
                 if [[ -z "$in_idxs" ]]; then
                     IN_TAGS="null"
-                    echo "已选择: [全部入站]"
                 else
-                    IN_TAGS=$(echo "$in_idxs" | tr ',' '\n' | while read -r i; do
-                        jq -r ".inbounds[$((i-1))].tag" "$CONFIG_FILE"
-                    done | jq -R . | jq -s .)
-                    echo "已选择入站: $IN_TAGS"
+                    IN_TAGS=$(echo "$in_idxs" | tr ',' '\n' | while read -r i; do jq -r ".inbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s .)
                 fi
 
-                # --- 第二步：配置出站 ---
-                echo -e "\n${CYAN}2. 请选择出站节点添加方式:${PLAIN}"
-                echo "1) 粘贴分享链接 (支持 SS / Socks5)"
-                echo "2) 手动输入配置 (支持 SS / Socks5 / HTTPS)"
+                # --- 第二步：选择匹配目标 (Target) ---
+                echo -e "\n${CYAN}2. 请选择匹配的目标网站/IP:${PLAIN}"
+                echo "1) 全部流量 (不限目标)"
+                echo "2) 域名匹配 (例如: google.com, youtube.com)"
+                echo "3) GeoSite 预设 (例如: openai, telegram, netflix)"
+                echo "4) IP / CIDR 匹配 (例如: 1.1.1.1, 8.8.8.0/24)"
+                read -p "请选择 [1-4]: " target_type
+                
+                local RULE_PART=""
+                case $target_type in
+                    2) 
+                        read -p "请输入域名 (多个用逗号隔开): " val
+                        local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
+                        RULE_PART="\"domain\": $val_json," ;;
+                    3) 
+                        read -p "请输入 GeoSite 名称 (如 openai,telegram): " val
+                        local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
+                        RULE_PART="\"geosite\": $val_json," ;;
+                    4) 
+                        read -p "请输入 IP 或 CIDR (多个用逗号隔开): " val
+                        local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
+                        RULE_PART="\"ip_cidr\": $val_json," ;;
+                    *) RULE_PART="" ;;
+                esac
+
+                # --- 第三步：配置转发出的出站 (Outbound) ---
+                echo -e "\n${CYAN}3. 请配置转发的目标出站节点:${PLAIN}"
+                echo "1) 粘贴分享链接 (ss:// / socks5://)"
+                echo "2) 手动输入配置 (SS / Socks5 / HTTPS)"
                 read -p "请选择 [1-2]: " out_mode
 
                 R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""
-
                 if [[ "$out_mode" == "1" ]]; then
                     read -p "请输入链接: " RAW_LINK
                     parse_proxy_link "$RAW_LINK"
-                    [[ -z "$R_ADDR" ]] && echo -e "${RED}链接解析失败！${PLAIN}" && pause && continue
                 else
-                    echo -e "\n选择协议: 1) Shadowsocks  2) Socks5  3) HTTPS"
-                    read -p "选择序号: " hop_type
-                    read -p "服务器地址: " R_ADDR
+                    echo -e "选择协议: 1) SS  2) Socks5  3) HTTPS"
+                    read -p "选择: " hop_type
+                    read -p "地址: " R_ADDR
                     read -p "端口: " R_PORT
                     case $hop_type in
-                        1)
-                            read -p "加密方式 (默认 aes-128-gcm): " R_METHOD; R_METHOD=${R_METHOD:-"aes-128-gcm"}
-                            read -p "密码: " R_PASS ;;
-                        2|3)
-                            read -p "用户名 (可选): " R_USER
-                            read -p "密码 (可选): " R_PASS ;;
-                        *) echo "无效选择"; continue ;;
+                        1) read -p "加密: " R_METHOD; read -p "密码: " R_PASS ;;
+                        2|3) read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
                     esac
                 fi
 
-                # --- 第三步：生成配置 ---
+                [[ -z "$R_ADDR" ]] && echo -e "${RED}出站配置无效！${PLAIN}" && pause && continue
+
+                # --- 第四步：生成 JSON 并注入 ---
                 OUT_TAG="route-out-$(date +%s)"
+                # 构造出站 JSON
                 if [[ "$hop_type" == "1" || -n "$R_METHOD" ]]; then
-                    # Shadowsocks
-                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
-                        '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}')
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" '{type:"shadowsocks",tag:$t,server:$s,server_port:($p|tonumber),method:$m,password:$pass}')
                 elif [[ "$hop_type" == "3" ]]; then
-                    # HTTPS (HTTP with TLS)
-                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
-                        '{type: "http", tag: $t, server: $s, server_port: ($p|tonumber), tls: {enabled: true}} + (if $u != "" then {username: $u, password: $pass} else {} end)')
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" '{type:"http",tag:$t,server:$s,server_port:($p|tonumber),tls:{enabled:true}} + (if $u != "" then {username:$u,password:$pass} else {} end)')
                 else
-                    # Socks5
-                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
-                        '{type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"} + (if $u != "" then {username: $u, password: $pass} else {} end)')
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" '{type:"socks",tag:$t,server:$s,server_port:($p|tonumber),version:"5"} + (if $u != "" then {username:$u,password:$pass} else {} end)')
                 fi
 
-                # 构造路由规则 (插入到 rules 数组第一位，优先级最高)
+                # 构造路由规则 JSON (组装 Inbound + Target + Outbound)
+                local base_rule="{$RULE_PART \"outbound\": \"$OUT_TAG\"}"
                 if [[ "$IN_TAGS" == "null" ]]; then
-                    RULE_JSON=$(jq -n --arg otag "$OUT_TAG" '{"outbound": $otag}')
+                    RULE_JSON=$(echo "$base_rule" | jq -c .)
                 else
-                    RULE_JSON=$(jq -n --argjson itags "$IN_TAGS" --arg otag "$OUT_TAG" '{"inbound": $itags, "outbound": $otag}')
+                    RULE_JSON=$(echo "$base_rule" | jq --argjson itags "$IN_TAGS" -c '. + {"inbound": $itags}')
                 fi
 
+                # 写入文件
                 jq --argjson out_obj "$OUT_JSON" --argjson rule_obj "$RULE_JSON" \
                    '.outbounds += [$out_obj] | .route.rules = [$rule_obj] + .route.rules' "$CONFIG_FILE" > tmp.json
                 
-                if save_and_restart; then
-                    echo -e "${GREEN}✔ 分流规则已成功添加！${PLAIN}"
-                fi
+                save_and_restart && echo -e "${GREEN}✔ 分流规则已添加！${PLAIN}"
                 pause
                 ;;
 
             2)
                 echo -e "\n${CYAN}当前分流规则列表:${PLAIN}"
                 echo "------------------------------------------------"
-                local r_count=$(jq '.route.rules | length' "$CONFIG_FILE")
-                if [[ "$r_count" -eq 0 ]]; then
-                    echo "暂无自定义规则。"
-                else
-                    jq -r '.route.rules | keys[] as $i | "\($i+1)) [入站]: \(.[$i].inbound // "全部") -> [出站]: \(.[$i].outbound)"' "$CONFIG_FILE"
-                fi
+                jq -r '.route.rules | keys[] as $i | "\($i+1)) [入站]:\(.[$i].inbound // "全部") | [目标]:\(if .[$i].domain then "域名" elif .[$i].geosite then "GeoSite" elif .[$i].ip_cidr then "IP" else "全部" end) -> [出站]:\(.[$i].outbound)"' "$CONFIG_FILE"
                 echo "------------------------------------------------"
                 pause
                 ;;
 
             3)
-                echo -e "\n${YELLOW}选择要删除的规则序号:${PLAIN}"
-                jq -r '.route.rules | keys[] as $i | "\($i+1)) 入站: \(.[$i].inbound // "全部") -> 出站: \(.[$i].outbound)"' "$CONFIG_FILE"
-                read -p "序号 (多个用逗号, 全部清空输入 all): " del_choice
-                
+                # 删除逻辑：列出编号删除，并自动清理关联的出站节点
+                jq -r '.route.rules | keys[] as $i | "\($i+1)) 入站:\(.[$i].inbound // "全部") -> 出站:\(.[$i].outbound)"' "$CONFIG_FILE"
+                read -p "输入要删除的序号 (全部清除输入 all): " del_choice
                 if [[ "$del_choice" == "all" ]]; then
                     jq '.route.rules = [] | .outbounds |= map(select(.tag | startswith("route-out-") | not))' "$CONFIG_FILE" > tmp.json
                 elif [[ -n "$del_choice" ]]; then
                     local jq_idxs=$(echo "$del_choice" | tr ',' '\n' | awk '{print $1-1}' | jq -R . | jq -s . | jq -c 'sort | reverse')
-                    jq --argjson idxs "$jq_idxs" 'del(.route.rules[$idxs[]])' "$CONFIG_FILE" > tmp.json
-                    # 清理孤立的出站节点 (仅清理 route-out 开头的)
-                    mv tmp.json tmp_stage1.json
-                    jq '.outbounds |= map(select((.tag | startswith("route-out-") | not) or (.tag as $t | any(.route.rules[]; .outbound == $t))))' tmp_stage1.json > tmp.json
-                    rm -f tmp_stage1.json
-                else
-                    continue
+                    jq --argjson idxs "$jq_idxs" 'del(.route.rules[$idxs[]])' "$CONFIG_FILE" > tmp_stage.json
+                    jq '.outbounds |= map(select((.tag | startswith("route-out-") | not) or (.tag as $t | any(.route.rules[]; .outbound == $t))))' tmp_stage.json > tmp.json
+                    rm -f tmp_stage.json
                 fi
-
-                if save_and_restart; then
-                    echo -e "${GREEN}✔ 规则已更新。${PLAIN}"
-                fi
+                save_and_restart && echo -e "${GREEN}✔ 规则已更新${PLAIN}"
                 pause
                 ;;
 
