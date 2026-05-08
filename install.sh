@@ -28,125 +28,125 @@ pause() {
 
 # --- 依赖函数：WARP 自动注册 ---
 register_warp_account() {
-    # 【修复1】移除 local 声明。否则 W_PRIV 等变量在函数执行结束后会被销毁，函数外部无法调用这些“返回值”
-    W_PRIV=""
-    W_V4=""
-    W_V6=""
-    W_RES_JSON=""
-    
-    # 检查并安装依赖
-    local need_install=0
-    local deps_to_install=() # 【修复2】更正数组初始化的标准语法
-    
-    # 检查必需工具
-    local dep
-    for dep in wireguard-tools jq curl; do
-        case $dep in
-            wireguard-tools)
-                if ! command -v wg >/dev/null 2>&1; then
-                    deps_to_install+=("$dep")
-                    need_install=1
-                fi
-                ;;
-            *)
-                if ! command -v "$dep" >/dev/null 2>&1; then
-                    deps_to_install+=("$dep")
-                    need_install=1
-                fi
-                ;;
-        esac
-    done
-    
-    # 检查解码工具（至少需要一个）
-    if ! command -v hexdump >/dev/null 2>&1 && ! command -v xxd >/dev/null 2>&1 && ! command -v od >/dev/null 2>&1; then
-        deps_to_install+=("bsdmainutils")
-        need_install=1
-    fi
+    # 【修复1】移除 local 声明。否则 W_PRIV 等变量在函数执行结束后会被销毁，函数外部无法调用这些“返回值”
+    W_PRIV=""
+    W_V4=""
+    W_V6=""
+    W_RES_JSON=""
+    
+    # 检查并安装依赖
+    local need_install=0
+    local deps_to_install=() # 【修复2】更正数组初始化的标准语法
+    
+    # 检查必需工具
+    local dep
+    for dep in wireguard-tools jq curl; do
+        case $dep in
+            wireguard-tools)
+                if ! command -v wg >/dev/null 2>&1; then
+                    deps_to_install+=("$dep")
+                    need_install=1
+                fi
+                ;;
+            *)
+                if ! command -v "$dep" >/dev/null 2>&1; then
+                    deps_to_install+=("$dep")
+                    need_install=1
+                fi
+                ;;
+        esac
+    done
+    
+    # 检查解码工具（至少需要一个）
+    if ! command -v hexdump >/dev/null 2>&1 && ! command -v xxd >/dev/null 2>&1 && ! command -v od >/dev/null 2>&1; then
+        deps_to_install+=("bsdmainutils")
+        need_install=1
+    fi
 
-    if [ "$need_install" -eq 1 ]; then
-        echo -e "${YELLOW}正在安装必要依赖: ${deps_to_install[*]}...${PLAIN}"
-        apt update >/dev/null 2>&1
-        if ! apt install -y "${deps_to_install[@]}" 2>/dev/null; then
-            echo -e "${RED}✘ 依赖安装失败${PLAIN}"
-            return 1
-        fi
-    fi
+    if [ "$need_install" -eq 1 ]; then
+        echo -e "${YELLOW}正在安装必要依赖: ${deps_to_install[*]}...${PLAIN}"
+        apt update >/dev/null 2>&1
+        if ! apt install -y "${deps_to_install[@]}" 2>/dev/null; then
+            echo -e "${RED}✘ 依赖安装失败${PLAIN}"
+            return 1
+        fi
+    fi
 
-    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
-    
-    # 生成密钥对
-    local priv
-    priv=$(wg genkey 2>/dev/null)
-    if [[ -z "$priv" ]]; then
-        echo -e "${RED}✘ 无法生成 WireGuard 密钥${PLAIN}"
-        return 1
-    fi
-    
-    local pub
-    pub=$(echo "$priv" | wg pubkey 2>/dev/null)
-    if [[ -z "$pub" ]]; then
-        echo -e "${RED}✘ 无法生成公钥${PLAIN}"
-        return 1
-    fi
-    
-    # 请求 WARP 注册
-    local response
-    response=$(curl -s --connect-timeout 10 -m 15 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
-        -H "Content-Type: application/json" \
-        -H "User-Agent: okhttp/3.12.1" \
-        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
+    
+    # 生成密钥对
+    local priv
+    priv=$(wg genkey 2>/dev/null)
+    if [[ -z "$priv" ]]; then
+        echo -e "${RED}✘ 无法生成 WireGuard 密钥${PLAIN}"
+        return 1
+    fi
+    
+    local pub
+    pub=$(echo "$priv" | wg pubkey 2>/dev/null)
+    if [[ -z "$pub" ]]; then
+        echo -e "${RED}✘ 无法生成公钥${PLAIN}"
+        return 1
+    fi
+    
+    # 请求 WARP 注册
+    local response
+    response=$(curl -s --connect-timeout 10 -m 15 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
+        -H "Content-Type: application/json" \
+        -H "User-Agent: okhttp/3.12.1" \
+        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
-    # 检查响应
-    if [[ -z "$response" ]]; then
-        echo -e "${RED}✘ API 无响应，请检查网络${PLAIN}"
-        return 1
-    fi
-    
-    if [[ "$response" != *"token"* ]]; then
-        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
-        return 1
-    fi
+    # 检查响应
+    if [[ -z "$response" ]]; then
+        echo -e "${RED}✘ API 无响应，请检查网络${PLAIN}"
+        return 1
+    fi
+    
+    if [[ "$response" != *"token"* ]]; then
+        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
+        return 1
+    fi
 
-    # 提取参数
-    W_PRIV="$priv"
-    W_V4=$(echo "$response" | jq -r '.config.interface.addresses.v4 // .config.interface.address.v4 // "172.16.0.2/32"')
-    W_V6=$(echo "$response" | jq -r '.config.interface.addresses.v6 // .config.interface.address.v6 // "2606:4700:110:8a2c:9c7d:ce0:3df7:d993/128"')
-    
-    # 转换 Reserved 格式
-    local cid
-    cid=$(echo "$response" | jq -r '.config.clientId // .config.client_id // empty')
-    
-    if [[ -n "$cid" && "$cid" != "null" ]]; then
-        # 【修复3】将 echo 替换为 echo -n，防止追加换行符导致 base64 -d 解析失败
-        if command -v hexdump >/dev/null 2>&1; then
-            W_RES_JSON="[$(echo -n "$cid" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' | sed 's/,$//')]"
-            
-        elif command -v xxd >/dev/null 2>&1; then
-            W_RES_JSON="[$(echo -n "$cid" | base64 -d 2>/dev/null | xxd -p | fold -w2 | while read hex; do printf "%d," "0x$hex"; done | sed 's/,$//')]"
-            
-        elif command -v od >/dev/null 2>&1; then
-            W_RES_JSON="[$(echo -n "$cid" | base64 -d 2>/dev/null | od -An -tu1 -v | awk '{for(i=1;i<=NF;i++) printf "%d,", $i}' | sed 's/,$//')]"
-            
-        else
-            W_RES_JSON="[0,0,0]"
-        fi
-    else
-        W_RES_JSON="[0,0,0]"
-    fi
-    
-    # 验证格式
-    if [[ ! "$W_RES_JSON" =~ ^\[[0-9]+(,[0-9]+)*\]$ ]]; then
-        W_RES_JSON="[0,0,0]"
-    fi
+    # 提取参数
+    W_PRIV="$priv"
+    W_V4=$(echo "$response" | jq -r '.config.interface.addresses.v4 // .config.interface.address.v4 // "172.16.0.2/32"')
+    W_V6=$(echo "$response" | jq -r '.config.interface.addresses.v6 // .config.interface.address.v6 // "2606:4700:110:8a2c:9c7d:ce0:3df7:d993/128"')
+    
+    # 转换 Reserved 格式
+    local cid
+    cid=$(echo "$response" | jq -r '.config.clientId // .config.client_id // empty')
+    
+    if [[ -n "$cid" && "$cid" != "null" ]]; then
+        # 【修复3】将 echo 替换为 echo -n，防止追加换行符导致 base64 -d 解析失败
+        if command -v hexdump >/dev/null 2>&1; then
+            W_RES_JSON="[$(echo -n "$cid" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' | sed 's/,$//')]"
+            
+        elif command -v xxd >/dev/null 2>&1; then
+            W_RES_JSON="[$(echo -n "$cid" | base64 -d 2>/dev/null | xxd -p | fold -w2 | while read hex; do printf "%d," "0x$hex"; done | sed 's/,$//')]"
+            
+        elif command -v od >/dev/null 2>&1; then
+            W_RES_JSON="[$(echo -n "$cid" | base64 -d 2>/dev/null | od -An -tu1 -v | awk '{for(i=1;i<=NF;i++) printf "%d,", $i}' | sed 's/,$//')]"
+            
+        else
+            W_RES_JSON="[0,0,0]"
+        fi
+    else
+        W_RES_JSON="[0,0,0]"
+    fi
+    
+    # 验证格式
+    if [[ ! "$W_RES_JSON" =~ ^\[[0-9]+(,[0-9]+)*\]$ ]]; then
+        W_RES_JSON="[0,0,0]"
+    fi
 
-    # 最终检查
-    if [[ -z "$W_V4" ]]; then
-        echo -e "${RED}✘ 解析 WARP 账户信息失败${PLAIN}"
-        return 1
-    fi
+    # 最终检查
+    if [[ -z "$W_V4" ]]; then
+        echo -e "${RED}✘ 解析 WARP 账户信息失败${PLAIN}"
+        return 1
+    fi
 
-    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
-    return 0
+    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
+    return 0
 }
 
 # 原子化写入配置并进行语法检查
