@@ -151,31 +151,20 @@ register_warp_account() {
 
 # 原子化写入配置并进行语法检查
 save_and_restart() {
-    if [[ ! -f tmp.json ]]; then
-        echo -e "${RED}错误: 临时配置文件生成失败。${PLAIN}"
-        return 1
-    fi
+    if [[ ! -f tmp.json ]]; then
+        echo -e "${RED}错误: 临时配置文件生成失败。${PLAIN}"
+        return 1
+    fi
 
-    # 先检查语法
-    if $SB_BIN check -c tmp.json > /tmp/sb_check.log 2>&1; then
-        # 备份当前配置
-        cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
-        mv tmp.json "$CONFIG_FILE"
-        if systemctl restart sing-box; then
-            echo -e "${GREEN}✔ 配置应用成功${PLAIN}"
-            return 0
-        else
-            echo -e "${RED}✘ 服务重启失败，正在回滚配置...${PLAIN}"
-            mv "${CONFIG_FILE}.bak" "$CONFIG_FILE"
-            systemctl restart sing-box
-            return 1
-        fi
-    else
-        echo -e "${RED}✘ 配置语法检查失败:${PLAIN}"
-        cat /tmp/sb_check.log
-        rm -f tmp.json /tmp/sb_check.log
-        return 1
-    fi
+    if $SB_BIN check -c tmp.json > /dev/null 2>&1; then
+        mv tmp.json "$CONFIG_FILE"
+        systemctl restart sing-box
+        return 0
+    else
+        echo -e "${RED}✘ 配置语法检查失败，请检查参数设置。旧配置已保留。${PLAIN}"
+        rm -f tmp.json
+        return 1
+    fi
 }
 
 init_config() {
