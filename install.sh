@@ -26,138 +26,70 @@ pause() {
     read -p "操作完成，按回车键继续..."
 }
 
+# --- 依赖函数：WARP 自动注册 ---
+register_warp_account() {
+    W_PRIV="" W_V4="" W_V6="" W_RES_JSON=""
+    
+    # 检查并安装依赖
+    local need_install=0
+    for dep in wireguard-tools jq curl bsdmainutils; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            need_install=1
+            break
+        fi
+    done
+
+    if [ "$need_install" -eq 1 ]; then
+        echo -e "${YELLOW}正在安装必要依赖...${PLAIN}"
+        apt update && apt install -y wireguard-tools jq curl bsdmainutils
+    fi
+
+    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
+    
+    local priv=$(wg genkey)
+    local pub=$(echo "$priv" | wg pubkey)
+    
+    local response=$(curl -s --connect-timeout 10 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
+        -H "Content-Type: application/json" \
+        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+
+    if [[ "$response" != *"token"* ]]; then
+        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
+        return 1
+    fi
+
+    W_PRIV="$priv"
+    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4')
+    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6')
+    W_RES_JSON=$(echo "$response" | jq -r '.config.clientId' | base64 -d | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+
+    if [[ -z "$W_V4" || "$W_V4" == "null" ]]; then
+        echo -e "${RED}✘ 解析 WARP 账户失败${PLAIN}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
+    return 0
+}
 
 # 原子化写入配置并进行语法检查
 save_and_restart() {
-    if [[ ! -f tmp.json ]]; then
-        echo -e "${RED}错误: 临时配置文件生成失败。${PLAIN}"
-        return 1
-    fi
+    if [[ ! -f tmp.json ]]; then
+        echo -e "${RED}错误: 临时配置文件生成失败。${PLAIN}"
+        return 1
+    fi
 
-    if $SB_BIN check -c tmp.json > /dev/null 2>&1; then
-        mv tmp.json "$CONFIG_FILE"
-        systemctl restart sing-box
-        return 0
-    else
-        echo -e "${RED}✘ 配置语法检查失败，请检查参数设置。旧配置已保留。${PLAIN}"
-        rm -f tmp.json
-        return 1
-    fi
+    if $SB_BIN check -c tmp.json > /dev/null 2>&1; then
+        mv tmp.json "$CONFIG_FILE"
+        systemctl restart sing-box
+        return 0
+    else
+        echo -e "${RED}✘ 配置语法检查失败，请检查参数设置。旧配置已保留。${PLAIN}"
+        rm -f tmp.json
+        return 1
+    fi
 }
-register_warp_account() {
-    # 这里使用全局变量，供函数外读取
-    W_PRIV=""
-    W_V4=""
-    W_V6=""
-    W_RES_JSON=""
 
-    local need_install=0
-    local deps_to_install=()
-    local dep
-
-    # 检查必需工具
-    for dep in wireguard-tools jq curl; do
-        case "$dep" in
-            wireguard-tools)
-                if ! command -v wg >/dev/null 2>&1; then
-                    deps_to_install+=("$dep")
-                    need_install=1
-                fi
-                ;;
-            *)
-                if ! command -v "$dep" >/dev/null 2>&1; then
-                    deps_to_install+=("$dep")
-                    need_install=1
-                fi
-                ;;
-        esac
-    done
-
-    # 检查解码工具（至少需要一个）
-    if ! command -v hexdump >/dev/null 2>&1 && \
-       ! command -v xxd >/dev/null 2>&1 && \
-       ! command -v od >/dev/null 2>&1; then
-        deps_to_install+=("bsdmainutils")
-        need_install=1
-    fi
-
-    if [ "$need_install" -eq 1 ]; then
-        echo -e "${YELLOW}正在安装必要依赖: ${deps_to_install[*]}...${PLAIN}"
-        apt update >/dev/null 2>&1
-        if ! apt install -y "${deps_to_install[@]}" >/dev/null 2>&1; then
-            echo -e "${RED}✘ 依赖安装失败${PLAIN}"
-            return 1
-        fi
-    fi
-
-    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
-
-    # 生成密钥对
-    local priv pub response cid
-    priv=$(wg genkey 2>/dev/null)
-    if [[ -z "$priv" ]]; then
-        echo -e "${RED}✘ 无法生成 WireGuard 密钥${PLAIN}"
-        return 1
-    fi
-
-    pub=$(printf '%s' "$priv" | wg pubkey 2>/dev/null)
-    if [[ -z "$pub" ]]; then
-        echo -e "${RED}✘ 无法生成公钥${PLAIN}"
-        return 1
-    fi
-
-    # 请求 WARP 注册
-    response=$(curl -s --connect-timeout 10 -m 15 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
-        -H "Content-Type: application/json" \
-        -H "User-Agent: okhttp/3.12.1" \
-        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
-
-    if [[ -z "$response" ]]; then
-        echo -e "${RED}✘ API 无响应，请检查网络${PLAIN}"
-        return 1
-    fi
-
-    if [[ "$response" != *"token"* ]]; then
-        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
-        return 1
-    fi
-
-    # 提取参数
-    W_PRIV="$priv"
-    W_V4=$(printf '%s' "$response" | jq -r '.config.interface.addresses.v4 // .config.interface.address.v4 // "172.16.0.2/32"')
-    W_V6=$(printf '%s' "$response" | jq -r '.config.interface.addresses.v6 // .config.interface.address.v6 // "2606:4700:110:8a2c:9c7d:ce0:3df7:d993/128"')
-
-    # 转换 Reserved 格式
-    cid=$(printf '%s' "$response" | jq -r '.config.clientId // .config.client_id // empty')
-
-    if [[ -n "$cid" && "$cid" != "null" ]]; then
-        if command -v hexdump >/dev/null 2>&1; then
-            W_RES_JSON="[$(printf '%s' "$cid" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' | sed 's/,$//')]"
-        elif command -v xxd >/dev/null 2>&1; then
-            W_RES_JSON="[$(printf '%s' "$cid" | base64 -d 2>/dev/null | xxd -p | fold -w2 | while read -r hex; do printf '%d,' "0x$hex"; done | sed 's/,$//')]"
-        elif command -v od >/dev/null 2>&1; then
-            W_RES_JSON="[$(printf '%s' "$cid" | base64 -d 2>/dev/null | od -An -tu1 -v | awk '{for (i=1; i<=NF; i++) printf "%d,", $i}' | sed 's/,$//')]"
-        else
-            W_RES_JSON="[0,0,0]"
-        fi
-    else
-        W_RES_JSON="[0,0,0]"
-    fi
-
-    # 验证格式
-    if [[ ! "$W_RES_JSON" =~ ^\[[0-9]+(,[0-9]+)*\]$ ]]; then
-        W_RES_JSON="[0,0,0]"
-    fi
-
-    # 最终检查
-    if [[ -z "$W_V4" ]]; then
-        echo -e "${RED}✘ 解析 WARP 账户信息失败${PLAIN}"
-        return 1
-    fi
-
-    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
-    return 0
-}
 init_config() {
     mkdir -p /etc/sing-box "$LINK_DIR" "$CERT_DIR"
     if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
@@ -587,25 +519,11 @@ chain_proxy() {
                 echo "3. 自动注册 Cloudflare WARP"
                 read -p "选择: " type_choice
 
-                # 重置所有节点参数
-                R_ADDR="" R_PORT="" R_METHOD="" R_PASS="" R_USER=""
                 OUT_TAG="hop-$(date +%s)"
                 
                 if [[ "$type_choice" == "1" ]]; then
                     read -p "请输入链接: " RAW_LINK
-                    if [[ -n "$RAW_LINK" ]]; then
-                        parse_proxy_link "$RAW_LINK"
-                    else
-                        echo -e "${RED}链接不能为空${PLAIN}"
-                        sleep 2
-                        continue
-                    fi
-                    # 根据解析结果判断 hop_type
-                    if [[ "$RAW_LINK" =~ ^ss:// ]]; then
-                        hop_type=1
-                    elif [[ "$RAW_LINK" =~ ^socks5:// ]]; then
-                        hop_type=2
-                    fi
+                    parse_proxy_link "$RAW_LINK"
                 elif [[ "$type_choice" == "2" ]]; then
                     read -p "协议 (1.SS 2.Socks5): " hop_type
                     read -p "地址: " R_ADDR
@@ -617,8 +535,7 @@ chain_proxy() {
                         read -p "用户名: " R_USER; read -p "密码: " R_PASS
                     fi
                 elif [[ "$type_choice" == "3" ]]; then
-                    # 显式声明局部变量以接收 register_warp_account 的输出
-                    local W_PRIV W_V4 W_V6 W_RES_JSON
+                    # 调用之前定义的 WARP 注册函数
                     if register_warp_account; then
                         # 构造 WARP JSON，包含 detour 到当前节点
                         OUT_JSON=$(jq -n \
@@ -627,7 +544,7 @@ chain_proxy() {
                             --arg v4 "$W_V4" \
                             --arg v6 "$W_V6" \
                             --arg d "$CURRENT_OUTBOUND" \
-                            --argjson res "${W_RES_JSON:-[0,0,0]}" \
+                            --argjson res "$W_RES_JSON" \
                             '{
                                 "type": "wireguard",
                                 "tag": $t,
@@ -639,72 +556,32 @@ chain_proxy() {
                                 "reserved": $res,
                                 "mtu": 1280
                             } + (if $d != "" and $d != "null" then {detour: $d} else {} end)')
-                        
-                        if [[ -z "$OUT_JSON" || "$OUT_JSON" == "null" ]]; then
-                            echo -e "${RED}✘ WARP 配置生成失败${PLAIN}"
-                            sleep 2
-                            continue
-                        fi
                     else
-                        echo -e "${RED}✘ WARP 注册失败，请重试${PLAIN}"
-                        sleep 2
-                        continue
+                        sleep 2; continue
                     fi
                 fi
 
                 # --- 3. 构造普通节点 JSON (如果不是 WARP) ---
                 if [[ "$type_choice" != "3" ]]; then
-                    # 验证必要参数
-                    if [[ -z "$R_ADDR" || -z "$R_PORT" ]]; then
-                        echo -e "${RED}✘ 节点信息不完整，请重新输入${PLAIN}"
-                        sleep 2
-                        continue
-                    fi
-                    
-                    if [[ "$hop_type" == "1" || "$RAW_LINK" =~ ^ss:// ]]; then
+                    if [[ "$hop_type" == "1" || "$RAW_LINK" == ss://* ]]; then
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" --arg d "$CURRENT_OUTBOUND" \
                             '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass} + (if $d != "" and $d != "null" then {detour: $d} else {} end)')
                     else
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg d "$CURRENT_OUTBOUND" \
                             '{type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"} + (if $d != "" and $d != "null" then {detour: $d} else {} end)')
-                        if [[ -n "$R_USER" ]]; then
-                            OUT_JSON=$(echo "$OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + {username: $u, password: $p}')
-                        fi
-                    fi
-                    
-                    if [[ -z "$OUT_JSON" || "$OUT_JSON" == "null" ]]; then
-                        echo -e "${RED}✘ 节点配置生成失败${plain}"
-                        sleep 2
-                        continue
+                        [[ -n "$R_USER" ]] && OUT_JSON=$(echo "$OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + {username: $u, password: $p}')
                     fi
                 fi
 
-                # --- 4. 写入配置并验证 ---
-                echo -e "${YELLOW}正在应用配置...${PLAIN}"
+                # --- 4. 写入并重启 ---
                 jq --argjson obj "$OUT_JSON" --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '
                     .outbounds += [$obj] |
-                    if .route.rules then
-                        del(.route.rules[] | select(.inbound[0] == $itag))
-                    else
-                        .
-                    end |
-                    .route.rules = [{ "inbound": [$itag], "outbound": $otag }] + (.route.rules // [])
-                ' "$CONFIG_FILE" > tmp.json
-
-                if [[ $? -ne 0 || ! -s tmp.json ]]; then
-                    echo -e "${RED}✘ 配置修改失败${PLAIN}"
-                    rm -f tmp.json
-                    sleep 2
-                    continue
-                fi
-
-                # 使用 save_and_restart 进行语法检查和重启
-                if save_and_restart; then
-                    echo -e "${GREEN}✔ 链路配置已生效！${PLAIN}"
-                else
-                    echo -e "${RED}✘ 配置语法错误，变更已回滚${PLAIN}"
-                fi
+                    del(.route.rules[] | select(.inbound[0] == $itag)) |
+                    .route.rules = [{ "inbound": [$itag], "outbound": $otag }] + .route.rules
+                ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
                 
+                echo -e "${GREEN}✔ 链路已更新 (追加了新节点)${PLAIN}"
+                save_and_restart
                 sleep 2
                 ;;
 
@@ -712,26 +589,25 @@ chain_proxy() {
                 # --- 查看链路 ---
                 echo -e "\n${YELLOW}当前活跃转发链路:${PLAIN}"
                 echo "------------------------------------------------"
-                local rules_count=$(jq '.route.rules | length' "$CONFIG_FILE" 2>/dev/null || echo 0)
+                local rules_count=$(jq '.route.rules | length' "$CONFIG_FILE")
                 local found=0
                 
                 for ((i=0; i<rules_count; i++)); do
                     local in_tag=$(jq -r ".route.rules[$i].inbound[0] // empty" "$CONFIG_FILE")
+                    for ((i=0; i<rules_count; i++)); do
+                    local in_tag=$(jq -r ".route.rules[$i].inbound[0] // empty" "$CONFIG_FILE")
                     local out_tag=$(jq -r ".route.rules[$i].outbound // empty" "$CONFIG_FILE")
                     
-                    if [[ -n "$in_tag" && "$out_tag" != "direct" && "$out_tag" != "block" && -n "$out_tag" ]]; then
+                    if [[ -n "$in_tag" && "$out_tag" != "direct" && "$out_tag" != "block" ]]; then
                         found=1
                         local path="$in_tag"
                         local next="$out_tag"
-                        local depth=0
-                        local max_depth=10  # 防止无限循环
                         
-                        while [[ -n "$next" && "$next" != "null" && $depth -lt $max_depth ]]; do
-                            local srv=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | if .server then "\(.server):\(.server_port)" else "" end' "$CONFIG_FILE" 2>/dev/null)
-                            [[ -z "$srv" || "$srv" == "null" ]] && srv="内置节点"
+                        while [[ -n "$next" && "$next" != "null" ]]; do
+                            local srv=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | "\(.server):\(.server_port)"' "$CONFIG_FILE")
+                            [[ -z "$srv" ]] && srv="内置节点"
                             path="$path -> $next($srv)"
-                            next=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | .detour // empty' "$CONFIG_FILE" 2>/dev/null)
-                            ((depth++))
+                            next=$(jq -r --arg t "$next" '.outbounds[] | select(.tag == $t) | .detour // empty' "$CONFIG_FILE")
                         done
                         echo -e "${CYAN}[规则]${PLAIN} $path -> 互联网"
                     fi
@@ -739,64 +615,37 @@ chain_proxy() {
                 [[ $found -eq 0 ]] && echo "暂无自定义转发规则。"
                 echo "------------------------------------------------"
                 read -n 1 -s -r -p "按任意键返回菜单..."
-                echo ""
                 ;;
 
             3)
                 # --- 清空规则 ---
                 echo -e "\n${YELLOW}请选择要重置为直连的入站节点:${PLAIN}"
-                local list=$(jq -r '.route.rules[] | select(.inbound != null) | .inbound[0]' "$CONFIG_FILE" 2>/dev/null)
+                local list=$(jq -r '.route.rules[] | select(.inbound != null) | .inbound[0]' "$CONFIG_FILE")
                 if [[ -z "$list" ]]; then 
                     echo "没有发现转发规则。"
-                    sleep 2
                 else
                     echo "$list" | cat -n
                     read -p "选择序号: " del_idx
                     local DEL_IN_TAG=$(echo "$list" | sed -n "${del_idx}p")
                     
                     if [[ -n "$DEL_IN_TAG" ]]; then
-                        # 收集相关联的出站标签
                         local tags_to_del=$(jq -r --arg itag "$DEL_IN_TAG" '
-                            def get_chain(t):
-                                [.outbounds[] | select(.tag == t) | 
-                                 .tag, 
-                                 (if .detour then get_chain(.detour) else empty end)] | 
-                                flatten | unique;
+                            def get_chain(t): .outbounds[] | select(.tag == t) | .tag, (if .detour then get_chain(.detour) else empty end);
                             (.route.rules[] | select(.inbound[0] == $itag) | .outbound) as $start |
-                            if $start then get_chain($start) else [] end |
-                            .[]
-                        ' "$CONFIG_FILE" 2>/dev/null)
+                            get_chain($start)
+                        ' "$CONFIG_FILE")
 
-                        echo -e "${YELLOW}将删除以下标签的出站节点:${PLAIN}"
-                        echo "$tags_to_del" | cat -n
-                        read -p "确认删除? (y/n): " confirm
+                        jq --arg itag "$DEL_IN_TAG" --argjson tags "$(echo "$tags_to_del" | jq -R . | jq -s .)" '
+                            del(.route.rules[] | select(.inbound[0] == $itag)) |
+                            del(.outbounds[] | select(.tag as $t | $tags | contains([$t])))
+                        ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
                         
-                        if [[ "$confirm" == "y" ]]; then
-                            # 构建 jq 删除命令
-                            local tags_json=$(echo "$tags_to_del" | jq -R . | jq -s .)
-                            jq --arg itag "$DEL_IN_TAG" --argjson tags "$tags_json" '
-                                del(.route.rules[] | select(.inbound[0] == $itag)) |
-                                del(.outbounds[] | select(.tag as $t | $tags | index($t)))
-                            ' "$CONFIG_FILE" > tmp.json
-
-                            if [[ $? -eq 0 && -s tmp.json ]]; then
-                                if save_and_restart; then
-                                    echo -e "${GREEN}✔ 链路已清空，节点已删除${PLAIN}"
-                                else
-                                    echo -e "${RED}✘ 配置验证失败，变更已回滚${PLAIN}"
-                                fi
-                            else
-                                echo -e "${RED}✘ 配置修改失败${PLAIN}"
-                                rm -f tmp.json
-                            fi
-                        else
-                            echo -e "${YELLOW}已取消删除${PLAIN}"
-                        fi
-                    else
-                        echo -e "${RED}无效选择${PLAIN}"
+                        (systemctl restart sing-box &)
+                        echo -e "${GREEN}✔ 链路已清空。${PLAIN}"
                     fi
                 fi
-                sleep 2
+                sleep 1
+                read -n 1 -s -r -p "按任意键继续..."
                 ;;
 
             0)
@@ -817,7 +666,7 @@ manage_routing() {
 
     while true; do
         # 每次循环重置变量，防止污染
-        R_ADDR="" R_PORT="" R_METHOD="" R_PASS="" R_USER="" RAW_LINK="" OUT_TAG=""
+        R_ADDR="" R_PORT="" R_METHOD="" R_PASS="" R_USER="" RAW_LINK=""
         
         clear
         echo -e "${YELLOW}--- 通用分流管理 (Split Tunneling) ---${PLAIN}"
@@ -836,24 +685,22 @@ manage_routing() {
                 echo "3. 自动申请并添加 Cloudflare WARP 节点"
                 read -p "选择: " out_src_choice
 
+                OUT_TAG=""
+
                 if [[ "$out_src_choice" == "1" ]]; then
                     echo -e "\n${CYAN}当前可用出站列表:${PLAIN}"
                     local ob_count=$(jq '.outbounds | length' "$CONFIG_FILE")
-                    [[ "$ob_count" == "0" ]] && { echo "无可用出站节点"; sleep 2; continue; }
+                    [[ "$ob_count" == "0" ]] && { echo "无节点"; sleep 2; continue; }
                     jq -r '.outbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
                     read -p "选择序号: " idx
-                    [[ -z "$idx" || "$idx" -gt "$ob_count" || "$idx" -lt 1 ]] && { echo -e "${RED}无效选择${PLAIN}"; sleep 1; continue; }
+                    [[ -z "$idx" ]] && continue
                     OUT_TAG=$(jq -r ".outbounds[$((idx-1))].tag" "$CONFIG_FILE")
 
                 elif [[ "$out_src_choice" == "2" ]]; then
+                    # 修正点 1: 修正 read 命令
                     read -p "请输入分享链接 (或直接回车进入手动模式): " RAW_LINK
                     if [[ -n "$RAW_LINK" ]]; then
                         parse_proxy_link "$RAW_LINK"
-                        if [[ "$RAW_LINK" =~ ^ss:// ]]; then
-                            hop_type=1
-                        elif [[ "$RAW_LINK" =~ ^socks5:// ]]; then
-                            hop_type=2
-                        fi
                     else
                         read -p "协议 (1.SS 2.Socks5): " hop_type
                         read -p "地址: " R_ADDR
@@ -866,95 +713,37 @@ manage_routing() {
                         fi
                     fi
 
-                    # 验证必要参数
-                    if [[ -z "$R_ADDR" || -z "$R_PORT" ]]; then
-                        echo -e "${RED}✘ 节点信息不完整${PLAIN}"
-                        sleep 1
-                        continue
-                    fi
+                    [[ -z "$R_ADDR" ]] && { echo "信息不完整"; sleep 1; continue; }
                     
-                    # 统一前缀名
+                    # 修正点 2: 统一前缀名
                     OUT_TAG="split-node-$(date +%s)"
                     local NEW_OUT_JSON=""
-                    if [[ "$hop_type" == "1" || "$RAW_LINK" =~ ^ss:// ]]; then
+                    if [[ "$hop_type" == "1" || "$RAW_LINK" == ss://* ]]; then
                         NEW_OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
                             '{type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}')
                     else
                         NEW_OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" \
                             '{type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"}')
-                        if [[ -n "$R_USER" ]]; then
-                            NEW_OUT_JSON=$(echo "$NEW_OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + {username: $u, password: $p}')
-                        fi
+                        [[ -n "$R_USER" ]] && NEW_OUT_JSON=$(echo "$NEW_OUT_JSON" | jq --arg u "$R_USER" --arg p "$R_PASS" '. + {username: $u, password: $p}')
                     fi
-                    
-                    # 写入配置
-                    if [[ -n "$NEW_OUT_JSON" && "$NEW_OUT_JSON" != "null" ]]; then
-                        jq --argjson obj "$NEW_OUT_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json
-                        if [[ $? -eq 0 && -s tmp.json ]]; then
-                            if save_and_restart; then
-                                echo -e "${GREEN}✔ 节点 [$OUT_TAG] 添加成功${PLAIN}"
-                            else
-                                echo -e "${RED}✘ 配置错误，节点添加失败${PLAIN}"
-                                sleep 2
-                                continue
-                            fi
-                        else
-                            echo -e "${RED}✘ 配置修改失败${PLAIN}"
-                            rm -f tmp.json
-                            sleep 2
-                            continue
-                        fi
-                    else
-                        echo -e "${RED}✘ 节点配置生成失败${PLAIN}"
-                        sleep 2
-                        continue
-                    fi
+                    # 修正点 3: 必须 mv 覆盖
+                    jq --argjson obj "$NEW_OUT_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
 
                 elif [[ "$out_src_choice" == "3" ]]; then
-                    # 显式声明局部变量
-                    local W_PRIV W_V4 W_V6 W_RES_JSON
                     if register_warp_account; then
                         OUT_TAG="split-node-warp-$(date +%s)"
                         local WARP_JSON=$(jq -n \
-                            --arg t "$OUT_TAG" --arg priv "$W_PRIV" --arg v4 "$W_V4" --arg v6 "$W_V6" \
-                            --argjson res "${W_RES_JSON:-[0,0,0]}" \
-                            '{type: "wireguard", tag: $t, server: "engage.cloudflareclient.com", server_port: 2408, 
-                              local_address: [$v4, $v6], private_key: $priv, 
-                              peer_public_key: "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", 
-                              reserved: $res, mtu: 1280}')
-                        
-                        if [[ -n "$WARP_JSON" && "$WARP_JSON" != "null" ]]; then
-                            jq --argjson obj "$WARP_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json
-                            if [[ $? -eq 0 && -s tmp.json ]]; then
-                                if save_and_restart; then
-                                    echo -e "${GREEN}✔ WARP 节点 [$OUT_TAG] 添加成功${PLAIN}"
-                                else
-                                    echo -e "${RED}✘ 配置错误${PLAIN}"
-                                    sleep 2
-                                    continue
-                                fi
-                            fi
-                        else
-                            echo -e "${RED}✘ WARP 配置生成失败${PLAIN}"
-                            sleep 2
-                            continue
-                        fi
+                            --arg t "$OUT_TAG" --arg priv "$W_PRIV" --arg v4 "$W_V4" --arg v6 "$W_V6" --argjson res "$W_RES_JSON" \
+                            '{type: "wireguard", tag: $t, server: "engage.cloudflareclient.com", server_port: 2408, local_address: [$v4, $v6], private_key: $priv, peer_public_key: "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", reserved: $res, mtu: 1280}')
+                        jq --argjson obj "$WARP_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
                     else
-                        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
-                        sleep 2
-                        continue
+                        sleep 2; continue
                     fi
-                else
-                    echo -e "${RED}无效选择${PLAIN}"
-                    sleep 1
-                    continue
                 fi
 
                 # --- 第二阶段：绑定匹配规则 ---
                 if [[ -z "$OUT_TAG" ]]; then
-                    echo -e "${RED}✘ 节点获取失败${PLAIN}"
-                    sleep 2
-                    continue
+                    echo -e "${RED}✘ 节点获取失败${PLAIN}"; sleep 2; continue
                 fi
 
                 echo -e "\n${CYAN}>> 节点 [$OUT_TAG] 已就绪，设置分流规则:${PLAIN}"
@@ -966,27 +755,17 @@ manage_routing() {
                     1) MATCH_TYPE="domain_suffix";;
                     2) MATCH_TYPE="domain_keyword";;
                     3) MATCH_TYPE="ip_cidr";;
-                    *) echo -e "${RED}无效选择${PLAIN}"; sleep 1; continue;;
+                    *) continue;;
                 esac
 
                 read -p "请输入匹配值 (多个用逗号隔开): " MATCH_VALUE
-                [[ -z "$MATCH_VALUE" ]] && { echo -e "${RED}匹配值不能为空${PLAIN}"; sleep 1; continue; }
+                [[ -z "$MATCH_VALUE" ]] && continue
 
-                local val_json=$(echo "$MATCH_VALUE" | jq -R 'split(",") | map(gsub("^\\s+|\\s+$";""))' | jq -c '.')
+                local val_json=$(echo "$MATCH_VALUE" | jq -R 'split(",")' | jq -c '.')
                 RULE_JSON=$(jq -n --arg mt "$MATCH_TYPE" --arg ot "$OUT_TAG" --argjson mv "$val_json" '{"\($mt)": $mv, "outbound": $ot}')
 
-                # 应用规则
-                jq --argjson rule "$RULE_JSON" '.route.rules = [$rule] + (.route.rules // [])' "$CONFIG_FILE" > tmp.json
-                if [[ $? -eq 0 && -s tmp.json ]]; then
-                    if save_and_restart; then
-                        echo -e "${GREEN}✔ 分流规则已生效！${PLAIN}"
-                    else
-                        echo -e "${RED}✘ 配置验证失败，变更已回滚${PLAIN}"
-                    fi
-                else
-                    echo -e "${RED}✘ 规则应用失败${PLAIN}"
-                    rm -f tmp.json
-                fi
+                jq --argjson rule "$RULE_JSON" '.route.rules = [$rule] + .route.rules' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
+                save_and_restart && echo -e "${GREEN}✔ 分流规则已生效！${PLAIN}"
                 sleep 2
                 ;;
 
@@ -994,82 +773,44 @@ manage_routing() {
                 # --- 查看逻辑 ---
                 echo -e "\n${YELLOW}当前自定义路由规则:${PLAIN}"
                 echo "------------------------------------------------"
-                local has_rules=$(jq -r '.route.rules[] | select(.inbound == null)' "$CONFIG_FILE" 2>/dev/null)
-                if [[ -z "$has_rules" ]]; then
-                    echo "暂无分流规则"
-                else
-                    jq -r '.route.rules[] | select(.inbound == null) | 
-                        "[\(.outbound)] <- " + (if .domain_suffix then "后缀:\(.domain_suffix | join(", "))" 
-                                                   elif .domain_keyword then "关键字:\(.domain_keyword | join(", "))" 
-                                                   elif .ip_cidr then "IP段:\(.ip_cidr | join(", "))" 
-                                                   else "其他" end)' "$CONFIG_FILE" | cat -n
-                fi
+                jq -r '.route.rules[] | select(.inbound == null) | 
+                    "[\(.outbound)] <- " + (if .domain_suffix then "后缀:\(.domain_suffix)" elif .domain_keyword then "关键字:\(.domain_keyword)" elif .ip_cidr then "IP段:\(.ip_cidr)" else "其他" end)' "$CONFIG_FILE" | cat -n
                 echo "------------------------------------------------"
                 read -n 1 -s -r -p "按任意键返回..."
-                echo ""
                 ;;
 
             3)
                 # --- 删除逻辑 ---
                 echo -e "\n${YELLOW}选择要删除的规则序号:${PLAIN}"
                 # 提取非入站绑定的规则
-                local rules_list=$(jq -c '.route.rules[] | select(.inbound == null)' "$CONFIG_FILE" 2>/dev/null)
-                if [[ -z "$rules_list" ]]; then
-                    echo "无分流规则可删除"
-                    sleep 1
-                    continue
-                fi
+                local rules_list=$(jq -c '.route.rules[] | select(.inbound == null)' "$CONFIG_FILE")
+                [[ -z "$rules_list" ]] && { echo "无分流规则"; sleep 1; continue; }
                 
                 # 打印列表
                 echo "$rules_list" | jq -r '(.outbound) + " (" + (if .domain_suffix then "后缀" elif .domain_keyword then "关键字" elif .ip_cidr then "IP段" else "其他" end) + ")"' | cat -n
-                read -p "序号 (输入 0 取消): " del_idx
-                
-                [[ "$del_idx" == "0" ]] && continue
+                read -p "序号: " del_idx
                 
                 # 校验输入是否为数字以及是否在范围内
                 local total=$(echo "$rules_list" | wc -l)
                 if [[ ! "$del_idx" =~ ^[0-9]+$ ]] || [[ "$del_idx" -lt 1 ]] || [[ "$del_idx" -gt "$total" ]]; then
-                    echo -e "${RED}无效序号${PLAIN}"
-                    sleep 1
-                    continue
+                    echo -e "${RED}无效序号${PLAIN}"; sleep 1; continue
                 fi
 
                 local target_rule=$(echo "$rules_list" | sed -n "${del_idx}p")
                 local target_tag=$(echo "$target_rule" | jq -r .outbound)
+
+                # 执行删除操作
+                jq --argjson tr "$target_rule" --arg otag "$target_tag" '
+                    del(.route.rules[] | select(. == $tr)) |
+                    if ($otag | startswith("split-node-")) then 
+                        del(.outbounds[] | select(.tag == $otag)) 
+                    else . end
+                ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
                 
-                echo -e "${YELLOW}将要删除规则: ${PLAIN}"
-                echo "$target_rule" | jq '.'
-                read -p "确认删除? (y/n): " confirm
-                
-                if [[ "$confirm" == "y" ]]; then
-                    # 执行删除操作
-                    jq --argjson tr "$target_rule" --arg otag "$target_tag" '
-                        del(.route.rules[] | select(. == $tr)) |
-                        if ($otag | startswith("split-node-")) then 
-                            del(.outbounds[] | select(.tag == $otag)) 
-                        else . end
-                    ' "$CONFIG_FILE" > tmp.json
-                    
-                    if [[ $? -eq 0 && -s tmp.json ]]; then
-                        if save_and_restart; then
-                            echo -e "${GREEN}✔ 规则及相关临时节点已清理${PLAIN}"
-                        else
-                            echo -e "${RED}✘ 配置验证失败，变更已回滚${PLAIN}"
-                        fi
-                    else
-                        echo -e "${RED}✘ 删除操作失败${PLAIN}"
-                        rm -f tmp.json
-                    fi
-                else
-                    echo -e "${YELLOW}已取消删除${PLAIN}"
-                fi
+                save_and_restart && echo -e "${GREEN}✔ 规则及相关临时节点已清理${PLAIN}"
                 sleep 1
                 ;;
             0) return ;;
-            *)
-                echo -e "${RED}无效选择${PLAIN}"
-                sleep 1
-                ;;
         esac
     done
 }
