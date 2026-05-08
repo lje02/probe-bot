@@ -757,10 +757,10 @@ while true; do
     show_status
     echo "--------------------------------"
     echo "1. 安装 / 重装 sing-box"
-    echo "2. 节点配置 (VLESS/TUIC/Hy2/SS/Socks/ws_cf)"
+    echo "2. 节点配置 (VLESS/TUIC/Hy2/SS/Socks/WS_CF)"
     echo "3. 管理配置 (查看/修改端口/删除)"
-    echo "4. 链式代理设置/管理"
-    echo "5. 分流设置/管理"
+    echo "4. 链式转发设置/管理"
+    echo "5. 分流设置/落地/管理"
     echo "6. 更新脚本或内核"
     echo "7. 备份 / 还原"
     echo "8. 开启 BBR 网络加速"
