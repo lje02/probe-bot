@@ -579,7 +579,7 @@ chain_proxy() {
 
 manage_routing() {
     local rt_choice IN_TAGS OUT_TAG OUT_JSON RULE_JSON
-
+    
     while true; do
         clear
         echo -e "${YELLOW}--- 网站分流/路由管理 ---${PLAIN}"
@@ -592,217 +592,118 @@ manage_routing() {
 
         case $rt_choice in
             1)
-                # ==== 第一步：入站选择 ====
+                # --- 第一步：选择来源入站 ---
                 echo -e "\n${CYAN}1. 请选择来源入站:${PLAIN}"
                 local in_count=$(jq '.inbounds | length' "$CONFIG_FILE")
                 if [[ "$in_count" -eq 0 ]]; then
-                    echo -e "${RED}错误：本地没有任何入站配置。${PLAIN}"
+                    echo -e "${RED}错误：本地没有入站配置。${PLAIN}"
                     pause && continue
                 fi
                 jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
-                read -p "选择序号 (多选用逗号, 回车代表全部): " in_idxs
+                read -p "选择序号 (多选用逗号, 直接回车代表全部): " in_idxs
                 if [[ -z "$in_idxs" ]]; then
                     IN_TAGS="null"
                 else
                     IN_TAGS=$(echo "$in_idxs" | tr ',' '\n' | while read -r i; do jq -r ".inbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s .)
                 fi
 
-                # ==== 第二步：目标匹配规则 ====
+                # --- 第二步：选择匹配目标 (你的目标网站代码在此) ---
                 echo -e "\n${CYAN}2. 请选择匹配的目标网站/IP:${PLAIN}"
                 echo "1) 全部流量 (不限目标)"
                 echo "2) 域名匹配 (例如: google.com, youtube.com)"
                 echo "3) GeoSite 预设 (例如: openai, telegram, netflix)"
                 echo "4) IP / CIDR 匹配 (例如: 1.1.1.1, 8.8.8.0/24)"
                 read -p "请选择 [1-4]: " target_type
-
+                
                 local RULE_PART=""
                 case $target_type in
-                    2)
+                    2) 
                         read -p "请输入域名 (多个用逗号隔开): " val
                         local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
                         RULE_PART="\"domain\": $val_json," ;;
-                    3)
+                    3) 
                         read -p "请输入 GeoSite 名称 (如 openai,telegram): " val
                         local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
                         RULE_PART="\"geosite\": $val_json," ;;
-                    4)
+                    4) 
                         read -p "请输入 IP 或 CIDR (多个用逗号隔开): " val
                         local val_json=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s . -c)
                         RULE_PART="\"ip_cidr\": $val_json," ;;
-                    *) RULE_PART="" ;;
                 esac
 
-                # ==== 第三步：出站模式选择 ====
-                echo -e "\n${CYAN}3. 选择出站模式:${PLAIN}"
-                echo "1) 单个节点"
-                echo "2) 多节点选择器 (Selector)"
-                echo "3) 多节点自动测速 (URLTest)"
-                echo "4) 负载均衡 (Load Balancer)"
-                echo "5) 中转链 (Chain)"
-                read -p "请选择 [1-5]: " chain_mode
+                # --- 第三步：配置转发出的出站 (自动选择/负载均衡在此) ---
+                echo -e "\n${CYAN}3. 请配置转发的目标出站节点:${PLAIN}"
+                echo "1) 粘贴分享链接 (SS / Socks5)"
+                echo "2) 手动输入配置 (SS / Socks5 / HTTPS)"
+                echo "3) 自动选择 (URL-Test - 自动切换低延迟)"
+                echo "4) 负载均衡 (Load-Balance - 轮询)"
+                read -p "请选择 [1-4]: " out_mode
 
-                local IS_ARRAY=false IS_LB=false IS_CHAIN=false
-                OUT_TAG=""; OUT_JSON=""; RULE_JSON=""
-                local LB_JSON="" CHAIN_JSON="" children_tags_json="" children_objs_json=""
-                local group_prefix=""
+                R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""; OUT_JSON=""
 
-                if [[ "$chain_mode" == "1" ]]; then
-                    # ---------- 单节点 ----------
-                    input_single_outbound "新出站节点"
-                    [[ $? -ne 0 ]] && echo -e "${RED}出站配置无效！${PLAIN}" && pause && continue
+                if [[ "$out_mode" == "1" ]]; then
+                    read -p "请输入链接: " RAW_LINK
+                    parse_proxy_link "$RAW_LINK"
+                elif [[ "$out_mode" == "2" ]]; then
+                    echo -e "协议: 1) SS  2) Socks5  3) HTTPS"
+                    read -p "选择: " hop_type
+                    read -p "地址: " R_ADDR
+                    read -p "端口: " R_PORT
+                    case $hop_type in
+                        1) read -p "加密: " R_METHOD; read -p "密码: " R_PASS ;;
+                        2|3) read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
+                    esac
+                elif [[ "$out_mode" == "3" || "$out_mode" == "4" ]]; then
+                    echo -e "\n选择节点成员 (多选用逗号):"
+                    jq -r '.outbounds | keys[] as $i | "\($i+1)) \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
+                    read -p "选择序号: " member_idxs
+                    [[ -z "$member_idxs" ]] && continue
+                    MEMBER_TAGS=$(echo "$member_idxs" | tr ',' '\n' | while read -r i; do jq -r ".outbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s . -c)
+                    OUT_TAG="group-out-$(date +%s)"
+                    if [[ "$out_mode" == "3" ]]; then
+                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"urltest",tag:$t,outbounds:$m,url:"https://www.gstatic.com/generate_204",interval:"3m0s"}')
+                    else
+                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{type:"selector",tag:$t,outbounds:$m}')
+                    fi
+                fi
+
+                # --- 第四步：生成并写入配置 ---
+                if [[ -z "$OUT_JSON" ]]; then
                     OUT_TAG="route-out-$(date +%s)"
-                    OUT_JSON=$(generate_outbound_json "$OUT_TAG")
-                    # 包装成数组
-                    OUT_JSON="[$OUT_JSON]"
-
-                elif [[ "$chain_mode" == "2" || "$chain_mode" == "3" ]]; then
-                    # ---------- Selector / URLTest ----------
-                    read -p "请输入节点数量: " node_count
-                    [[ ! "$node_count" =~ ^[1-9][0-9]*$ ]] && echo -e "${RED}数量无效！${PLAIN}" && pause && continue
-                    group_prefix="route-group-$(date +%s)"
-                    children_tags_json="[]"
-                    children_objs_json="[]"
-                    for ((i=1; i<=node_count; i++)); do
-                        input_single_outbound "节点 $i/$node_count" || continue
-                        local child_tag="${group_prefix}-$(printf "%02d" $i)"
-                        local child_json=$(generate_outbound_json "$child_tag")
-                        # 使用 jq 累积数组
-                        children_tags_json=$(echo "$children_tags_json" | jq --arg t "$child_tag" '. + [$t]')
-                        children_objs_json=$(echo "$children_objs_json" | jq --argjson obj "$child_json" '. + [$obj]')
-                    done
-                    [[ $(echo "$children_tags_json" | jq 'length') -eq 0 ]] && echo -e "${RED}无有效节点，取消${PLAIN}" && pause && continue
-
-                    if [[ "$chain_mode" == "2" ]]; then
-                        OUT_TAG="${group_prefix}-sel"
-                        local group_json=$(jq -n --arg t "$OUT_TAG" --argjson tags "$children_tags_json" \
-                            '{type:"selector",tag:$t,outbounds:$tags,default:$tags[0]}')
+                    if [[ "$hop_type" == "1" || -n "$R_METHOD" ]]; then
+                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" '{type:"shadowsocks",tag:$t,server:$s,server_port:($p|tonumber),method:$m,password:$pass}')
+                    elif [[ "$hop_type" == "3" ]]; then
+                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" '{type:"http",tag:$t,server:$s,server_port:($p|tonumber),tls:{enabled:true}} + (if $u != "" then {username:$u,password:$pass} else {} end)')
                     else
-                        OUT_TAG="${group_prefix}-url"
-                        local group_json=$(jq -n --arg t "$OUT_TAG" --argjson tags "$children_tags_json" \
-                            '{type:"urltest",tag:$t,outbounds:$tags}')
+                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" '{type:"socks",tag:$t,server:$s,server_port:($p|tonumber),version:"5"} + (if $u != "" then {username:$u,password:$pass} else {} end)')
                     fi
-                    OUT_JSON=$(echo "$children_objs_json" | jq --argjson group "$group_json" '. + [$group]')
-                    IS_ARRAY=true
-
-                elif [[ "$chain_mode" == "4" ]]; then
-                    # ---------- 负载均衡 ----------
-                    echo "支持策略: random(随机), round_robin(轮询)"
-                    read -p "请输入均衡策略: " lb_strategy
-                    [[ "$lb_strategy" != "random" && "$lb_strategy" != "round_robin" ]] && echo -e "${RED}策略无效${PLAIN}" && pause && continue
-                    read -p "请输入节点数量: " node_count
-                    [[ ! "$node_count" =~ ^[1-9][0-9]*$ ]] && echo -e "${RED}数量无效！${PLAIN}" && pause && continue
-                    group_prefix="route-lb-$(date +%s)"
-                    children_tags_json="[]"
-                    children_objs_json="[]"
-                    for ((i=1; i<=node_count; i++)); do
-                        input_single_outbound "节点 $i/$node_count" || continue
-                        local child_tag="${group_prefix}-$(printf "%02d" $i)"
-                        local child_json=$(generate_outbound_json "$child_tag")
-                        children_tags_json=$(echo "$children_tags_json" | jq --arg t "$child_tag" '. + [$t]')
-                        children_objs_json=$(echo "$children_objs_json" | jq --argjson obj "$child_json" '. + [$obj]')
-                    done
-                    [[ $(echo "$children_tags_json" | jq 'length') -eq 0 ]] && echo -e "${RED}无有效节点${PLAIN}" && pause && continue
-
-                    OUT_TAG="${group_prefix}-lb"
-                    LB_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$lb_strategy" --argjson tags "$children_tags_json" \
-                        '{tag:$t, type:$s, outbounds:$tags}')
-                    OUT_JSON="$children_objs_json"   # 仅子节点
-                    IS_LB=true
-
-                elif [[ "$chain_mode" == "5" ]]; then
-                    # ---------- 中转链 (Chain) ----------
-                    echo "1) 从现有出站中选择"
-                    echo "2) 手动新建节点并组成链"
-                    read -p "请选择: " chain_build
-                    if [[ "$chain_build" == "1" ]]; then
-                        echo -e "\n${CYAN}当前可用出站节点:${PLAIN}"
-                        jq -r '.outbounds[] | select(.tag) | "\(.tag) [\(.type)]"' "$CONFIG_FILE"
-                        read -p "按顺序输入 tag (逗号分隔): " chain_tags_input
-                        local tags_arr=$(echo "$chain_tags_input" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | jq -R . | jq -s .)
-                        [[ $(echo "$tags_arr" | jq 'length') -eq 0 ]] && echo -e "${RED}至少需要一个节点${PLAIN}" && pause && continue
-                        OUT_TAG="route-chain-$(date +%s)"
-                        CHAIN_JSON=$(jq -n --arg t "$OUT_TAG" --argjson tags "$tags_arr" '{type:"chain",tag:$t,outbounds:$tags}')
-                        OUT_JSON="[$CHAIN_JSON]"   # 只有链对象，无新节点
-                        IS_CHAIN=true
-                    else
-                        read -p "链中节点数量: " node_count
-                        [[ ! "$node_count" =~ ^[1-9][0-9]*$ ]] && echo -e "${RED}数量无效${PLAIN}" && pause && continue
-                        group_prefix="route-chain-$(date +%s)"
-                        children_tags_json="[]"
-                        children_objs_json="[]"
-                        for ((i=1; i<=node_count; i++)); do
-                            input_single_outbound "链节点 $i/$node_count" || continue
-                            local child_tag="${group_prefix}-$(printf "%02d" $i)"
-                            local child_json=$(generate_outbound_json "$child_tag")
-                            children_tags_json=$(echo "$children_tags_json" | jq --arg t "$child_tag" '. + [$t]')
-                            children_objs_json=$(echo "$children_objs_json" | jq --argjson obj "$child_json" '. + [$obj]')
-                        done
-                        [[ $(echo "$children_tags_json" | jq 'length') -eq 0 ]] && echo -e "${RED}无有效节点${PLAIN}" && pause && continue
-                        OUT_TAG="${group_prefix}-chain"
-                        CHAIN_JSON=$(jq -n --arg t "$OUT_TAG" --argjson tags "$children_tags_json" '{type:"chain",tag:$t,outbounds:$tags}')
-                        OUT_JSON=$(echo "$children_objs_json" | jq --argjson chain "$CHAIN_JSON" '. + [$chain]')
-                        IS_CHAIN=true
-                    fi
-                else
-                    echo -e "${RED}无效选项${PLAIN}" && pause && continue
                 fi
 
-                # ==== 第四步：生成路由规则 JSON ====
                 local base_rule="{$RULE_PART \"outbound\": \"$OUT_TAG\"}"
-                if [[ "$IN_TAGS" == "null" ]]; then
-                    RULE_JSON=$(echo "$base_rule" | jq -c .)
-                else
-                    RULE_JSON=$(echo "$base_rule" | jq --argjson itags "$IN_TAGS" -c '. + {"inbound": $itags}')
-                fi
+                [[ "$IN_TAGS" == "null" ]] && RULE_JSON=$(echo "$base_rule" | jq -c .) || RULE_JSON=$(echo "$base_rule" | jq --argjson itags "$IN_TAGS" -c '. + {"inbound": $itags}')
 
-                # ==== 写入配置文件 ====
-                if [[ "$IS_LB" == true ]]; then
-                    jq --argjson nodes "$OUT_JSON" --argjson lb "$LB_JSON" --argjson rule_obj "$RULE_JSON" \
-                        '.outbounds += $nodes | .load_balancers = (.load_balancers // []) + [$lb] | .route.rules = [$rule_obj] + .route.rules' \
-                        "$CONFIG_FILE" > tmp.json
-                else
-                    # 普通情况、Selector、URLTest、Chain 都走这里
-                    jq --argjson arr "$OUT_JSON" --argjson rule_obj "$RULE_JSON" \
-                        '.outbounds += $arr | .route.rules = [$rule_obj] + .route.rules' "$CONFIG_FILE" > tmp.json
-                fi
-
-                save_and_restart && echo -e "${GREEN}✔ 分流规则已添加！${PLAIN}"
+                jq --argjson out_obj "$OUT_JSON" --argjson rule_obj "$RULE_JSON" '.outbounds += [$out_obj] | .route.rules = [$rule_obj] + .route.rules' "$CONFIG_FILE" > tmp.json
+                save_and_restart && echo -e "${GREEN}✔ 规则已添加！${PLAIN}"
                 pause
                 ;;
 
             2)
                 echo -e "\n${CYAN}当前分流规则列表:${PLAIN}"
-                echo "------------------------------------------------"
-                jq -r '[.route.rules, .outbounds, .load_balancers // []] as $ctx |
-                       $ctx[0] | keys[] as $i |
-                       "\($i+1)) [入站]:\(.[$i].inbound // "全部") | [目标]:\(if .[$i].domain then "域名" elif .[$i].geosite then "GeoSite" elif .[$i].ip_cidr then "IP" else "全部" end) -> [出站]:\(.[$i].outbound) [类型: \((($ctx[1] + $ctx[2])[] | select(.tag == .[$i].outbound) | .type) // "unknown")]"' "$CONFIG_FILE"
-                echo "------------------------------------------------"
+                jq -r '.route.rules | keys[] as $i | "\($i+1)) [来源]:\(.[$i].inbound // "全部") | [目标]:\(if .[$i].domain then "域名" elif .[$i].geosite then "GeoSite" elif .[$i].ip_cidr then "IP" else "全部" end) -> [出站]:\(.[$i].outbound)"' "$CONFIG_FILE"
                 pause
                 ;;
 
             3)
-                echo -e "\n${CYAN}当前分流规则 (按编号删除):${PLAIN}"
-                local rules_count=$(jq '.route.rules | length' "$CONFIG_FILE")
-                if [[ "$rules_count" -eq 0 ]]; then
-                    echo "暂无规则。"
-                    pause && continue
-                fi
-                jq -r '.route.rules | keys[] as $i | "\($i+1)) 入站:\(.[$i].inbound // "全部") -> 出站:\(.[$i].outbound)"' "$CONFIG_FILE"
-                read -p "输入要删除的序号 (多个用逗号, all 清空全部规则): " del_choice
+                echo -e "\n${YELLOW}选择要删除的规则序号 (全部清除输入 all):${PLAIN}"
+                jq -r '.route.rules | keys[] as $i | "\($i+1)) 来源:\(.[$i].inbound // "全部") -> 目标:\(.[$i].outbound)"' "$CONFIG_FILE"
+                read -p "> " del_choice
                 if [[ "$del_choice" == "all" ]]; then
-                    jq '.route.rules = [] | .outbounds |= map(select(.tag | startswith("route-") | not)) |
-                        .load_balancers |= map(select(.tag | startswith("route-") | not))' "$CONFIG_FILE" > tmp.json
+                    jq '.route.rules = [] | .outbounds |= map(select(.tag | (startswith("route-out-") or startswith("group-out-")) | not))' "$CONFIG_FILE" > tmp.json
                 elif [[ -n "$del_choice" ]]; then
-                    local del_idxs=$(echo "$del_choice" | tr ',' '\n' | awk '{print $1-1}' | sort -rn | jq -R . | jq -s . | jq -c .)
-                    jq --argjson idxs "$del_idxs" '
-                        del(.route.rules[$idxs[]]) |
-                        ( [ .route.rules[].outbound ] | unique ) as $rule_refs |
-                        ( [ .outbounds[] | select(.type == "chain" or .type == "selector" or .type == "urltest") | .outbounds[]? ] | unique ) as $group_refs |
-                        ( [ .load_balancers[]?.outbounds[] ] | unique ) as $lb_refs |
-                        ( $rule_refs + $group_refs + $lb_refs ) as $all_refs |
-                        .outbounds |= map(select(.tag as $t | $all_refs | index($t) or (.tag | test("^route-") | not))) |
-                        .load_balancers |= map(select(.tag as $t | $rule_refs | index($t) or (.tag | test("^route-") | not)))
-                    ' "$CONFIG_FILE" > tmp.json
+                    local jq_idxs=$(echo "$del_choice" | tr ',' '\n' | awk '{print $1-1}' | jq -R . | jq -s . | jq -c 'sort | reverse')
+                    jq --argjson idxs "$jq_idxs" 'del(.route.rules[$idxs[]])' "$CONFIG_FILE" > tmp_stage.json
+                    jq '.outbounds |= map(select(((.tag | (startswith("route-out-") or startswith("group-out-"))) | not) or (.tag as $t | any(.route.rules[]; .outbound == $t))))' tmp_stage.json > tmp.json
+                    rm -f tmp_stage.json
                 fi
                 save_and_restart && echo -e "${GREEN}✔ 规则已更新${PLAIN}"
                 pause
