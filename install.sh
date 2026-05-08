@@ -74,18 +74,30 @@ register_warp_account() {
 
 # 原子化写入配置并进行语法检查
 save_and_restart() {
-    if [[ ! -f tmp.json ]]; then
+    # 使用绝对路径的临时文件
+    local tmp_file="/etc/sing-box/tmp.json"
+    
+    if [[ ! -f "$tmp_file" ]]; then
         echo -e "${RED}错误: 临时配置文件生成失败。${PLAIN}"
         return 1
     fi
-
-    if $SB_BIN check -c tmp.json > /dev/null 2>&1; then
-        mv tmp.json "$CONFIG_FILE"
+    
+    # 检查文件是否为空
+    if [[ ! -s "$tmp_file" ]]; then
+        echo -e "${RED}错误: 临时配置文件为空。${PLAIN}"
+        rm -f "$tmp_file"
+        return 1
+    fi
+    
+    if $SB_BIN check -c "$tmp_file" > /dev/null 2>&1; then
+        mv "$tmp_file" "$CONFIG_FILE"
         systemctl restart sing-box
         return 0
     else
         echo -e "${RED}✘ 配置语法检查失败，请检查参数设置。旧配置已保留。${PLAIN}"
-        rm -f tmp.json
+        echo -e "${YELLOW}错误详情:${PLAIN}"
+        $SB_BIN check -c "$tmp_file" 2>&1 | tail -5
+        rm -f "$tmp_file"
         return 1
     fi
 }
