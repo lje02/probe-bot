@@ -1042,7 +1042,7 @@ register_warp_account() {
     priv=$(wg genkey) || { echo -e "${RED}生成私钥失败${PLAIN}"; return 1; }
     pub=$(echo "$priv" | wg pubkey) || { echo -e "${RED}生成公钥失败${PLAIN}"; return 1; }
 
-    # 3. 调用 Cloudflare API（带端点自愈）
+    # 3. 调用 Cloudflare API（端点自愈）
     echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
     local tos_date
     if date -u +%FT%T.000Z >/dev/null 2>&1; then
@@ -1060,7 +1060,6 @@ register_warp_account() {
         -X POST "$api_endpoint" \
         -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
-    # 备用旧版端点
     if [[ -z "$response" || "$response" != "{"* ]]; then
         api_endpoint="https://api.cloudflareclient.com/v0a2445/reg"
         response=$(curl -s --connect-timeout 10 \
@@ -1081,15 +1080,17 @@ register_warp_account() {
     W_V4=$(echo "$response" | jq -r '(.config.interface.addresses.v4 // .config.interface.address.v4 // empty)' 2>/dev/null)
     W_V6=$(echo "$response" | jq -r '(.config.interface.addresses.v6 // .config.interface.address.v6 // empty)' 2>/dev/null)
 
-    # 6. 解析 reserved（必须成功）
+    # 6. 提取 client_id（兼容 client_id / clientId）
     local client_id
-    client_id=$(echo "$response" | jq -r '.config.clientId // empty' 2>/dev/null)
+    client_id=$(echo "$response" | jq -r '.config.client_id // .config.clientId // empty' 2>/dev/null)
     if [[ -z "$client_id" || "$client_id" == "null" ]]; then
         echo -e "${RED}✘ 无法提取客户端 ID${PLAIN}"
+        echo -e "${YELLOW}调试信息：API 返回结构${PLAIN}"
+        echo "$response" | jq .
         return 1
     fi
 
-    # 兼容不同系统的 hexdump/od
+    # 7. 解码 reserved（兼容 od / hexdump）
     local decoded
     decoded=$(echo "$client_id" | base64 -d 2>/dev/null)
     if command -v od &>/dev/null; then
@@ -1103,10 +1104,10 @@ register_warp_account() {
         return 1
     fi
 
-    # 7. 保存私钥
+    # 8. 保存私钥
     W_PRIV="$priv"
 
-    # 8. 结果确认（至少有一个地址）
+    # 9. 结果确认（至少有一个地址）
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
         echo -e "${RED}✘ 解析 WARP 账户失败（无可用地址）${PLAIN}"
         return 1
