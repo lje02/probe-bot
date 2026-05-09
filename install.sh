@@ -44,6 +44,52 @@ save_and_restart() {
     fi
 }
 
+# --- 依赖函数：WARP 自动注册 ---
+register_warp_account() {
+    W_PRIV="" W_V4="" W_V6="" W_RES_JSON=""
+    
+    # 检查并安装依赖
+    local need_install=0
+    for dep in wireguard-tools jq curl bsdmainutils; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            need_install=1
+            break
+        fi
+    done
+
+    if [ "$need_install" -eq 1 ]; then
+        echo -e "${YELLOW}正在安装必要依赖...${PLAIN}"
+        apt update && apt install -y wireguard-tools jq curl bsdmainutils
+    fi
+
+    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
+    
+    local priv=$(wg genkey)
+    local pub=$(echo "$priv" | wg pubkey)
+    
+    local response=$(curl -s --connect-timeout 10 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
+        -H "Content-Type: application/json" \
+        -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+
+    if [[ "$response" != *"token"* ]]; then
+        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
+        return 1
+    fi
+
+    W_PRIV="$priv"
+    W_V4=$(echo "$response" | jq -r '.config.interface.address.v4')
+    W_V6=$(echo "$response" | jq -r '.config.interface.address.v6')
+    W_RES_JSON=$(echo "$response" | jq -r '.config.clientId' | base64 -d | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+
+    if [[ -z "$W_V4" || "$W_V4" == "null" ]]; then
+        echo -e "${RED}✘ 解析 WARP 账户失败${PLAIN}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
+    return 0
+}
+
 init_config() {
     mkdir -p /etc/sing-box "$LINK_DIR" "$CERT_DIR"
     if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
@@ -1011,6 +1057,45 @@ add_outbound() {
         pause
     done
 }
+add_warp_outbound() {
+    if ! Register_warp_account; then
+        echo -e "${RED}WARP 注册失败，取消添加。${PLAIN}"
+        return 1
+    fi
+
+    
+    echo -e "${YELLOW}正在将 WARP 出站配置写入 sing-box...${PLAIN}"
+    
+    # 使用 --argjson 确保 reserved 被识别为数组类型而非字符串
+    jq --arg priv "$W_PRIV" \
+       --arg v4 "$W_V4" \
+       --arg v6 "$W_V6" \
+       --argjson res "$W_RES_JSON" \
+       '.outbounds += [{
+            "type": "wireguard",
+            "tag": "warp-out",
+            "server": "engage.cloudflareclient.com",
+            "server_port": 2408,
+            "local_address": [$v4, $v6],
+            "private_key": $priv,
+            "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+            "reserved": $res,
+            "mtu": 1280,
+            "udp_fragment": true
+        }]' "$CONFIG_FILE" > tmp.json
+
+    if [[ $? -ne 0 ]]; then
+        echo -e "${RED}✘ JSON 构造失败，请检查 jq 逻辑${PLAIN}"
+        rm -f tmp.json
+        return 1
+    fi
+
+    if save_and_restart; then
+        echo -e "${GREEN}✔ WARP 出站已添加成功！标签为: warp-out${PLAIN}"
+    else
+        echo -e "${RED}✘ sing-box 启动失败，请检查配置文件格式${PLAIN}"
+    fi
+}
 
 update_all() {
     auto_backup
@@ -1068,6 +1153,7 @@ while true; do
     echo "9. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
     echo "11 更改配置/删除"
+    echo "12 WARP"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -1085,6 +1171,7 @@ while true; do
         9) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
+        12) add_warp_outbound ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
