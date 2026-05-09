@@ -1131,13 +1131,19 @@ register_warp_account() {
 add_warp_outbound() {
     # 检查必要变量
     if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" || -z "$W_PRIV" ]]; then
-        echo -e "${RED}✘ 错误：缺少 WARP 账户数据，请先运行注册函数。${PLAIN}"
+        echo -e "${RED}✘ 缺少 WARP 账户数据，请先运行 register_warp_account${PLAIN}"
         return 1
     fi
 
-    echo -e "${YELLOW}正在配置 sing-box WARP 出站 (warp-out)...${PLAIN}"
+    # 检查配置文件是否存在且合法
+    if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}✘ 配置文件 $CONFIG_FILE 不是合法 JSON，请检查${PLAIN}"
+        return 1
+    fi
 
-    # 构建带 CIDR 后缀的地址数组
+    echo -e "${YELLOW}正在配置 sing-box WARP 出站...${PLAIN}"
+
+    # 构建地址数组（带 CIDR 后缀）
     local addresses_json="["
     [[ -n "$W_V4" ]] && addresses_json+="\"${W_V4}/32\""
     [[ -n "$W_V4" && -n "$W_V6" ]] && addresses_json+=","
@@ -1146,11 +1152,12 @@ add_warp_outbound() {
 
     local tmp_cfg="/tmp/sing-box-tmp-$$.json"
 
-    # 先删除所有旧 warp-out，再添加新格式（peers 结构）
-    jq --arg priv "$W_PRIV" \
-       --argjson addresses "$addresses_json" \
-       --argjson res "$W_RES_JSON" \
-       'del(.outbounds[] | select(.tag == "warp-out")) | .outbounds += [{
+    # 分两步操作：先删除旧 warp-out，再添加新条目，并捕获错误
+    local error_output
+    error_output=$(jq --arg priv "$W_PRIV" \
+        --argjson addresses "$addresses_json" \
+        --argjson res "$W_RES_JSON" \
+        'del(.outbounds[] | select(.tag == "warp-out")) | .outbounds += [{
             "type": "wireguard",
             "tag": "warp-out",
             "local_address": $addresses,
@@ -1163,10 +1170,12 @@ add_warp_outbound() {
                 "reserved": $res
             }],
             "mtu": 1280
-        }]' "$CONFIG_FILE" > "$tmp_cfg"
+        }]' "$CONFIG_FILE" > "$tmp_cfg" 2>&1)
 
-    if [[ $? -ne 0 || ! -s "$tmp_cfg" ]]; then
-        echo -e "${RED}✘ jq 处理失败，请检查配置文件 JSON 格式。${PLAIN}"
+    local exit_code=$?
+    if [[ $exit_code -ne 0 || ! -s "$tmp_cfg" ]]; then
+        echo -e "${RED}✘ jq 处理失败，错误信息：${PLAIN}"
+        echo "$error_output"
         rm -f "$tmp_cfg"
         return 1
     fi
