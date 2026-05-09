@@ -400,30 +400,44 @@ manage_configs() {
 # 简单的解析函数：支持 ss:// 和 socks5://
 parse_proxy_link() {
     local link=$1
+    local content decoded user_info server_info
+    
+    # 初始化变量，防止上一次的结果干扰
+    R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""
+
     if [[ "$link" =~ ^ss:// ]]; then
-        # 去掉协议头和后缀
-        local content=$(echo "${link#ss://}" | cut -d'#' -f1)
-        
-        # 处理可能的 SIP002 格式 (BASE64@HOST:PORT)
+        hop_type=1
+        content=$(echo "${link#ss://}" | cut -d'#' -f1)
+
         if [[ "$content" == *"@"* ]]; then
+            # --- SIP002 格式 (userinfo-b64@host:port) ---
             local user_info_b64=$(echo "$content" | cut -d'@' -f1)
-            local server_info=$(echo "$content" | cut -d'@' -f2)
+            server_info=$(echo "$content" | cut -d'@' -f2)
             
-            # 解码用户信息 (method:password)
-            local user_info=$(echo "$user_info_b64" | base64 -d 2>/dev/null)
+            # 容错解码 (处理 URL Safe 和 填充)
+            user_info=$(echo "$user_info_b64" | tr '_-' '/+' | awk '{printf "%s%s", $0, substr("===", 1, (4-length($0)%4)%4)}' | base64 -d 2>/dev/null)
             R_METHOD=$(echo "$user_info" | cut -d':' -f1)
             R_PASS=$(echo "$user_info" | cut -d':' -f2)
-            
             R_ADDR=$(echo "$server_info" | cut -d':' -f1)
-            R_PORT=$(echo "$server_info" | cut -d':' -f2)
-            hop_type=1
+            R_PORT=$(echo "$server_info" | cut -d':' -f2 | cut -d'/' -f1) # 过滤可能存在的插件参数
+        else
+            # --- 老版本格式 (整个全包 Base64) ---
+            decoded=$(echo "$content" | tr '_-' '/+' | awk '{printf "%s%s", $0, substr("===", 1, (4-length($0)%4)%4)}' | base64 -d 2>/dev/null)
+            if [[ "$decoded" =~ ^(.+):(.+)@(.+):([0-9]+) ]]; then
+                R_METHOD="${BASH_REMATCH[1]}"
+                R_PASS="${BASH_REMATCH[2]}"
+                R_ADDR="${BASH_REMATCH[3]}"
+                R_PORT="${BASH_REMATCH[4]}"
+            fi
         fi
+
     elif [[ "$link" =~ ^socks5:// ]]; then
-        # 格式: socks5://user:pass@host:port
-        local content=${link#socks5://}
+        hop_type=2
+        content=${link#socks5://}
+        content=$(echo "$content" | cut -d'#' -f1)
         if [[ "$content" == *"@"* ]]; then
-            local user_info=$(echo "$content" | cut -d'@' -f1)
-            local server_info=$(echo "$content" | cut -d'@' -f2)
+            user_info=$(echo "$content" | cut -d'@' -f1)
+            server_info=$(echo "$content" | cut -d'@' -f2)
             R_USER=$(echo "$user_info" | cut -d':' -f1)
             R_PASS=$(echo "$user_info" | cut -d':' -f2)
             R_ADDR=$(echo "$server_info" | cut -d':' -f1)
@@ -432,7 +446,6 @@ parse_proxy_link() {
             R_ADDR=$(echo "$content" | cut -d':' -f1)
             R_PORT=$(echo "$content" | cut -d':' -f2)
         fi
-        hop_type=2
     fi
 }
 
@@ -696,6 +709,91 @@ manage_routing() {
                 pause ;;
             0) return 0 ;;
         esac
+    done
+}
+
+# --- 添加基础出站节点 ---
+add_outbound() {
+    local node_type R_ADDR R_PORT R_METHOD R_PASS R_USER RAW_LINK OUT_TAG OUT_JSON
+    
+    while true; do
+        clear
+        echo -e "${YELLOW}--- 添加基础出站节点 ---${PLAIN}"
+        echo "1. 粘贴分享链接 (SS / Socks5)"
+        echo "2. 手动输入配置 (SS / Socks5 / HTTPS)"
+        echo "0. 返回主菜单"
+        echo "------------------------------------------------"
+        read -p "请选择 [0-2]: " node_type
+
+        [[ "$node_type" == "0" ]] && break
+
+        OUT_TAG="hop-$(date +%s)" # 自动生成节点标签
+        R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""
+
+        if [[ "$node_type" == "1" ]]; then
+            # --- 链接解析模式 ---
+            read -p "请输入节点链接: " RAW_LINK
+            # 调用解析函数 (需确保脚本内有 parse_proxy_link 函数)
+            parse_proxy_link "$RAW_LINK" 
+            
+            if [[ -z "$R_ADDR" ]]; then
+                echo -e "${RED}错误：链接解析失败，请检查格式！${PLAIN}"
+                pause && continue
+            fi
+        elif [[ "$node_type" == "2" ]]; then
+            # --- 手动输入模式 ---
+            echo -e "\n请选择协议: 1) SS  2) Socks5  3) HTTPS"
+            read -p "选择: " proto_choice
+            read -p "地址 (Domain/IP): " R_ADDR
+            read -p "端口 (Port): " R_PORT
+            
+            case $proto_choice in
+                1)
+                    read -p "加密方式 (如 aes-256-gcm): " R_METHOD
+                    read -p "密码: " R_PASS
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
+                        '{"type":"shadowsocks","tag":$t,"server":$s,"server_port":($p|tonumber),"method":$m,"password":$pass}')
+                    ;;
+                2)
+                    read -p "用户名 (可选): " R_USER
+                    read -p "密码 (可选): " R_PASS
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
+                        '{"type":"socks","tag":$t,"server":$s,"server_port":($p|tonumber),"version":"5"} + (if $u != "" then {"username":$u,"password":$pass} else {} end)')
+                    ;;
+                3)
+                    read -p "用户名 (可选): " R_USER
+                    read -p "密码 (可选): " R_PASS
+                    OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
+                        '{"type":"http","tag":$t,"server":$s,"server_port":($p|tonumber),"tls":{"enabled":true}} + (if $u != "" then {"username":$u,"password":$pass} else {} end)')
+                    ;;
+                *) echo -e "${RED}非法输入${PLAIN}"; continue ;;
+            esac
+        fi
+
+        # 如果是链接解析过来的，需要根据解析结果构造 JSON
+        if [[ -z "$OUT_JSON" && -n "$R_ADDR" ]]; then
+            if [[ -n "$R_METHOD" ]]; then # SS
+                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg m "$R_METHOD" --arg pass "$R_PASS" \
+                    '{"type":"shadowsocks","tag":$t,"server":$s,"server_port":($p|tonumber),"method":$m,"password":$pass}')
+            else # Socks5
+                OUT_JSON=$(jq -n --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" --arg u "$R_USER" --arg pass "$R_PASS" \
+                    '{"type":"socks","tag":$t,"server":$s,"server_port":($p|tonumber),"version":"5"} + (if $u != "" then {"username":$u,"password":$pass} else {} end)')
+            fi
+        fi
+
+        # --- 写入配置文件 ---
+        if [[ -n "$OUT_JSON" ]]; then
+            jq --argjson obj "$OUT_JSON" '.outbounds += [$obj]' "$CONFIG_FILE" > tmp.json
+            
+            if save_and_restart; then
+                echo -e "${GREEN}✔ 节点 [$OUT_TAG] 添加成功！${PLAIN}"
+            else
+                echo -e "${RED}✖ 语法检查失败，节点未添加。${PLAIN}"
+                $SB_BIN check -c tmp.json
+                rm -f tmp.json
+            fi
+        fi
+        pause
     done
 }
 
