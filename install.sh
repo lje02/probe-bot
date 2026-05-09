@@ -1067,7 +1067,7 @@ while true; do
     echo "8. 开启 BBR 网络加速"
     echo "9. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
-    echo "11 更改配置/删除
+    echo "11 更改配置/删除"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
