@@ -851,6 +851,7 @@ while true; do
     echo "7. 备份 / 还原"
     echo "8. 开启 BBR 网络加速"
     echo "9. 申请 SSL 域名证书 (ACME)"
+    echo "10 出站添加/管理"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -866,6 +867,7 @@ while true; do
         7) backup_restore ;;
         8) enable_bbr ;;
         9) apply_cert ;;
+        10) add_outbound;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
