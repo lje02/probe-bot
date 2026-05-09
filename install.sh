@@ -29,20 +29,32 @@ pause() {
 
 # 原子化写入配置并进行语法检查
 save_and_restart() {
-    if [[ ! -f tmp.json ]]; then
-        echo -e "${RED}错误: 临时配置文件生成失败。${PLAIN}"
+    local tmp_file="/tmp/sing-box-tmp-$$.json"   # 使用 PID 避免冲突
+
+    # 如果没传参数，则回退到当前目录的 tmp.json（兼容旧代码）
+    if [[ -n "$1" ]]; then
+        tmp_file="$1"
+    fi
+
+    if [[ ! -f "$tmp_file" ]]; then
+        echo -e "${RED}错误: 临时配置文件 ${tmp_file} 不存在。${PLAIN}"
         return 1
     fi
 
-    if $SB_BIN check -c tmp.json > /dev/null 2>&1; then
-        mv tmp.json "$CONFIG_FILE"
-        systemctl restart sing-box
-        return 0
+    # 用 sing-box 检查语法
+    if $SB_BIN check -c "$tmp_file" > /dev/null 2>&1; then
+        # 检查通过，替换原配置并重启
+        if cp "$tmp_file" "$CONFIG_FILE" && systemctl restart sing-box; then
+            rm -f "$tmp_file"
+            return 0
+        else
+            echo -e "${RED}✘ 替换配置文件或重启失败。${PLAIN}"
+        fi
     else
-        echo -e "${RED}✘ 配置语法检查失败，请检查参数设置。旧配置已保留。${PLAIN}"
-        rm -f tmp.json
-        return 1
+        echo -e "${RED}✘ 新配置语法检查失败，旧配置已保留。${PLAIN}"
+        rm -f "$tmp_file"
     fi
+    return 1
 }
 
 init_config() {
