@@ -29,15 +29,15 @@ pause() {
 
 # 原子化写入配置并进行语法检查
 save_and_restart() {
-    local tmp_file="${1:-tmp.json}"
+    local tmp_file="${1:-tmp.json}"   # 若未传参，则回退到 tmp.json（兼容旧调用）
 
     if [[ ! -f "$tmp_file" ]]; then
         echo -e "${RED}错误: 临时配置文件 ${tmp_file} 不存在。${PLAIN}"
         return 1
     fi
 
-    # 显示检查详情，不再隐藏输出
-    if $SB_BIN check -c "$tmp_file"; then
+    if $SB_BIN check -c "$tmp_file" > /dev/null 2>&1; then
+        # 检查通过，覆盖原配置并重启
         if cp "$tmp_file" "$CONFIG_FILE" && systemctl restart sing-box; then
             rm -f "$tmp_file"
             return 0
@@ -46,7 +46,7 @@ save_and_restart() {
             return 1
         fi
     else
-        echo -e "${RED}✘ 新配置语法检查失败，错误详情如上。旧配置已保留。${PLAIN}"
+        echo -e "${RED}✘ 新配置语法检查失败，旧配置已保留。${PLAIN}"
         rm -f "$tmp_file"
         return 1
     fi
