@@ -48,7 +48,7 @@ save_and_restart() {
 register_warp_account() {
     W_PRIV=""; W_V4=""; W_V6=""; W_RES_JSON=""
 
-    # ---------- 1. 依赖检查与安装 ----------
+    # 1. 依赖检查与安装
     local deps=("wireguard-tools" "jq" "curl" "bsdmainutils")
     local missing=()
     for dep in "${deps[@]}"; do
@@ -69,15 +69,14 @@ register_warp_account() {
         fi
     fi
 
-    # ---------- 2. 生成 WireGuard 密钥 ----------
+    # 2. 生成 WireGuard 密钥
     local priv pub
     priv=$(wg genkey) || { echo -e "${RED}生成私钥失败${PLAIN}"; return 1; }
     pub=$(echo "$priv" | wg pubkey) || { echo -e "${RED}生成公钥失败${PLAIN}"; return 1; }
 
-    # ---------- 3. 调用 Cloudflare API ----------
+    # 3. 调用 Cloudflare API（带端点自愈）
     echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
     local tos_date
-    # 使用固定格式避免 date 命令差异（macOS / BusyBox 等）
     if date -u +%FT%T.000Z >/dev/null 2>&1; then
         tos_date=$(date -u +%FT%T.000Z)
     else
@@ -93,7 +92,7 @@ register_warp_account() {
         -X POST "$api_endpoint" \
         -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
-    # 如果 API 返回空或不是 JSON，尝试旧版端点
+    # 备用旧版端点
     if [[ -z "$response" || "$response" != "{"* ]]; then
         api_endpoint="https://api.cloudflareclient.com/v0a2445/reg"
         response=$(curl -s --connect-timeout 10 \
@@ -103,34 +102,45 @@ register_warp_account() {
             -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
     fi
 
-    # ---------- 4. 基础检查（必须包含 token） ----------
+    # 4. 基础检查
     if [[ "$response" != *"token"* ]]; then
         echo -e "${RED}✘ WARP 注册失败${PLAIN}"
         echo -e "${RED}API 返回：${response:-<empty>}${PLAIN}"
         return 1
     fi
 
-    # ---------- 5. 解析 IPv4 / IPv6 地址（自动适配路径） ----------
-    # 可能的新路径：.config.interface.addresses.v4
-    # 旧路径：.config.interface.address.v4
-    # 也可能 v4 字段为 null，此时可只使用 v6
+    # 5. 解析地址（自适应新旧路径）
     W_V4=$(echo "$response" | jq -r '(.config.interface.addresses.v4 // .config.interface.address.v4 // empty)' 2>/dev/null)
     W_V6=$(echo "$response" | jq -r '(.config.interface.addresses.v6 // .config.interface.address.v6 // empty)' 2>/dev/null)
 
-    # ---------- 6. 解析客户端 ID（用于后续生成 License） ----------
+    # 6. 解析 reserved（必须成功）
     local client_id
     client_id=$(echo "$response" | jq -r '.config.clientId // empty' 2>/dev/null)
-    if [[ -n "$client_id" && "$client_id" != "null" ]]; then
-        W_RES_JSON=$(echo "$client_id" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' 2>/dev/null | sed 's/,$//')
-        [[ -n "$W_RES_JSON" ]] && W_RES_JSON="[$W_RES_JSON]"
+    if [[ -z "$client_id" || "$client_id" == "null" ]]; then
+        echo -e "${RED}✘ 无法提取客户端 ID${PLAIN}"
+        return 1
     fi
 
-    # ---------- 7. 保存私钥 ----------
+    # 兼容不同系统的 hexdump/od
+    local decoded
+    decoded=$(echo "$client_id" | base64 -d 2>/dev/null)
+    if command -v od &>/dev/null; then
+        W_RES_JSON=$(echo "$decoded" | od -An -t u1 --endian=big | tr -s ' ' ',' | sed 's/^,//' | awk '{print "["$0"]"}')
+    else
+        W_RES_JSON=$(echo "$decoded" | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+    fi
+
+    if [[ -z "$W_RES_JSON" || "$W_RES_JSON" == "[]" ]]; then
+        echo -e "${RED}✘ 解码 reserved 失败${PLAIN}"
+        return 1
+    fi
+
+    # 7. 保存私钥
     W_PRIV="$priv"
 
-    # ---------- 8. 结果判断（至少有一个地址可用） ----------
+    # 8. 结果确认（至少有一个地址）
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
-        echo -e "${RED}✘ 解析 WARP 账户失败（无可用 IPv4/IPv6 地址）${PLAIN}"
+        echo -e "${RED}✘ 解析 WARP 账户失败（无可用地址）${PLAIN}"
         return 1
     fi
 
@@ -1109,25 +1119,30 @@ add_outbound() {
 }
 
 add_warp_outbound() {
-    # 确保变量不为空
-    if [[ -z "$W_V4" || -z "$W_RES_JSON" ]]; then
+    # 检查至少有一个地址且 reserved 非空
+    if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" ]]; then
         echo -e "${RED}✘ 错误：未检测到有效的 WARP 账户数据，请重新运行注册函数${PLAIN}"
         return 1
     fi
 
     echo -e "${YELLOW}正在配置 WARP 出站 (warp-out)...${PLAIN}"
 
-    # 使用 jq 安全注入，注意 --argjson 处理 reserved 数组
+    # 动态构建 local_address 数组
+    local addresses_json="["
+    [[ -n "$W_V4" ]] && addresses_json+="\"$W_V4\""
+    [[ -n "$W_V4" && -n "$W_V6" ]] && addresses_json+=","
+    [[ -n "$W_V6" ]] && addresses_json+="\"$W_V6\""
+    addresses_json+="]"
+
     jq --arg priv "$W_PRIV" \
-       --arg v4 "$W_V4" \
-       --arg v6 "$W_V6" \
+       --argjson addresses "$addresses_json" \
        --argjson res "$W_RES_JSON" \
        '.outbounds += [{
             "type": "wireguard",
             "tag": "warp-out",
             "server": "engage.cloudflareclient.com",
             "server_port": 2408,
-            "local_address": [$v4, $v6],
+            "local_address": $addresses,
             "private_key": $priv,
             "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
             "reserved": $res,
@@ -1135,7 +1150,6 @@ add_warp_outbound() {
             "udp_fragment": true
         }]' "$CONFIG_FILE" > tmp.json
 
-    # 替换并重启
     if save_and_restart; then
         echo -e "${GREEN}✔ WARP 出站配置成功！${PLAIN}"
     else
