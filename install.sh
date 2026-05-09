@@ -1207,7 +1207,7 @@ toggle_warp() {
     has_warp=$(jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" 2>/dev/null)
     if [[ -z "$has_warp" ]]; then
         echo -e "${YELLOW}未检测到 WARP 配置，正在初始化申请...${PLAIN}"
-        if ! add_warp_outbound; then
+        if ! add_warp_outbound_singbox; then
             echo -e "${RED}初始化 WARP 失败，退出。${PLAIN}"
             return 1
         fi
@@ -1312,12 +1312,12 @@ while true; do
     echo "6. 更新脚本或内核"
     echo "7. 备份 / 还原"
     echo "8. 开启 BBR 网络加速"
-    echo "9. 申请 SSL 域名证书 (ACME)"
+    echo "14. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
     echo "11 更改配置/删除"
     echo "12 WARP注册"
     echo "13 一键开关WARP"
-    echo "14 配置WARP出站"
+    echo "9 配置WARP出站"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -1332,12 +1332,12 @@ while true; do
         6) update_all ;;
         7) backup_restore ;;
         8) enable_bbr ;;
-        9) apply_cert ;;
+        14) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
         12) register_warp_account ;;
         13) toggle_warp ;;
-        14) add_warp_outbound ;;
+        9) add_warp_outbound_singbox ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
