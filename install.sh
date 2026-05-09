@@ -1164,26 +1164,40 @@ add_warp_outbound() {
 toggle_warp() {
     clear
     echo -e "${YELLOW}--- WARP 全局开关管理 ---${PLAIN}"
-    
-    # 1. 检查配置中是否存在 warp-out 出站
-    local has_warp=$(jq '.outbounds[] | select(.tag=="warp-out")' "$CONFIG_FILE")
-    if [[ -z "$has_warp" ]]; then
-        echo -e "${YELLOW}未检测到 WARP 配置，正在初始化申请...${PLAIN}"
-        # 调用你之前的注册和添加函数
-        add_warp_outbound || return 1
+
+    # ---------- 前置检查 ----------
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo -e "${RED}配置文件 $CONFIG_FILE 不存在！${PLAIN}"
+        return 1
     fi
 
-    # 2. 获取当前的默认出站 (final)
-    local current_final=$(jq -r '.route.final' "$CONFIG_FILE")
+    # ---------- 1. 检查 warp-out 出站是否存在 ----------
+    local has_warp
+    has_warp=$(jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" 2>/dev/null)
+    if [[ -z "$has_warp" ]]; then
+        echo -e "${YELLOW}未检测到 WARP 配置，正在初始化申请...${PLAIN}"
+        # 调用注册并添加出站的函数（必须成功）
+        if ! add_warp_outbound; then
+            echo -e "${RED}初始化 WARP 失败，退出。${PLAIN}"
+            return 1
+        fi
+    fi
 
+    # ---------- 2. 读取当前默认出站标签 ----------
+    local current_final
+    current_final=$(jq -r '.route.final // "direct"' "$CONFIG_FILE")   # 没有 final 字段时默认为 direct
+
+    # ---------- 3. 交互开关 ----------
     if [[ "$current_final" == "warp-out" ]]; then
         echo -e "当前状态: ${GREEN}已开启 (全局走 WARP)${PLAIN}"
         read -p "是否关闭 WARP 全局代理？(y/n): " choice
         if [[ "$choice" == "y" ]]; then
-            # 将 final 改回 direct (或者你原本的默认出站标签)
-            jq '.route.final = "direct"' "$CONFIG_FILE" > tmp.json
+            # 修改 final 为 direct，并替换原配置文件
+            jq '.route.final = "direct"' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             if save_and_restart; then
                 echo -e "${GREEN}✔ WARP 已关闭，流量现在直连 (direct)。${PLAIN}"
+            else
+                echo -e "${RED}✘ 配置写入或重启失败，请检查 ${CONFIG_FILE}${PLAIN}"
             fi
         fi
     else
@@ -1191,14 +1205,17 @@ toggle_warp() {
         echo -e "${CYAN}注：开启后，所有节点流量都将通过 WARP 落地出口。${PLAIN}"
         read -p "是否开启 WARP 全局代理？(y/n): " choice
         if [[ "$choice" == "y" ]]; then
-            # 将 final 改为 warp-out
-            jq '.route.final = "warp-out"' "$CONFIG_FILE" > tmp.json
+            jq '.route.final = "warp-out"' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
             if save_and_restart; then
                 echo -e "${GREEN}✔ WARP 已开启，所有流量已重定向至 warp-out。${PLAIN}"
+            else
+                echo -e "${RED}✘ 配置写入或重启失败，请检查 ${CONFIG_FILE}${PLAIN}"
             fi
         fi
     fi
-    pause
+
+    # 如果脚本里有 pause 函数则保留，否则可注释掉
+    pause 2>/dev/null || read -p "按回车键继续..."
 }
 
 update_all() {
