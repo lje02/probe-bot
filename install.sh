@@ -1121,13 +1121,11 @@ register_warp_account() {
 
 # ========== 添加 WARP 出站 ==========
 add_warp_outbound() {
-    # 【修复1：自动联动注册函数】发现没数据时，主动去申请，而不是直接报错
     if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" || -z "$W_PRIV" ]]; then
         echo -e "${YELLOW}未检测到内存中的 WARP 账户数据，开始调用注册流程...${PLAIN}"
         register_warp_account || return 1
     fi
 
-    # 检查配置文件是否存在且合法
     if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
         echo -e "${RED}✘ 配置文件 $CONFIG_FILE 不是合法 JSON，请检查${PLAIN}"
         return 1
@@ -1135,7 +1133,6 @@ add_warp_outbound() {
 
     echo -e "${YELLOW}正在配置 sing-box WARP 出站...${PLAIN}"
 
-    # 构建地址数组（带 CIDR 后缀）
     local addresses_json="["
     [[ -n "$W_V4" ]] && addresses_json+="\"${W_V4}/32\""
     [[ -n "$W_V4" && -n "$W_V6" ]] && addresses_json+=","
@@ -1143,13 +1140,13 @@ add_warp_outbound() {
     addresses_json+="]"
 
     local tmp_cfg="/tmp/sing-box-tmp-$$.json"
-
-    # 【修复2：修正为 Sing-box 的标准结构】取消 peers 嵌套，改用扁平化参数，并增加 udp_fragment 提升移动端稳定性
     local error_output
+    
+    # 删除了可能引发不兼容的 udp_fragment 字段
     error_output=$(jq --arg priv "$W_PRIV" \
         --argjson addresses "$addresses_json" \
         --argjson res "$W_RES_JSON" \
-        'del(.outbounds[] | select(.tag == "warp-out")) | .outbounds += [{
+        'del(.outbounds[]? | select(.tag == "warp-out")) | .outbounds += [{
             "type": "wireguard",
             "tag": "warp-out",
             "server": "engage.cloudflareclient.com",
@@ -1158,28 +1155,35 @@ add_warp_outbound() {
             "private_key": $priv,
             "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
             "reserved": $res,
-            "mtu": 1280,
-            "udp_fragment": true
+            "mtu": 1280
         }]' "$CONFIG_FILE" > "$tmp_cfg" 2>&1)
 
-    local exit_code=$?
-    if [[ $exit_code -ne 0 || ! -s "$tmp_cfg" ]]; then
+    if [[ $? -ne 0 || ! -s "$tmp_cfg" ]]; then
         echo -e "${RED}✘ jq 处理失败，错误信息：${PLAIN}"
         echo "$error_output"
         rm -f "$tmp_cfg"
         return 1
     fi
 
-    # 替换配置文件并重启
-    # 注意：确保你的 save_and_restart 函数支持接收 "$tmp_cfg" 作为参数
-    # 如果不支持，可以使用下面的替代方案：
-    # mv "$tmp_cfg" "$CONFIG_FILE" && save_and_restart
+    # 【重要修复】：先利用 sing-box 自带的 check 命令验证新生成的 JSON
+    if ! sing-box check -c "$tmp_cfg" > /dev/null 2>&1; then
+        echo -e "${RED}✘ 生成的 WARP 配置不符合 sing-box 语法要求！${PLAIN}"
+        echo -e "${YELLOW}详细报错如下：${PLAIN}"
+        sing-box check -c "$tmp_cfg"
+        rm -f "$tmp_cfg"
+        return 1
+    fi
+
+    # 语法检查通过后，手动覆盖原文件并重启
+    mv -f "$tmp_cfg" "$CONFIG_FILE"
     
-    if save_and_restart "$tmp_cfg"; then
-        echo -e "${GREEN}✔ WARP 出站配置成功！${PLAIN}"
+    # 此时直接重启即可，不需要往 save_and_restart 传参了
+    # 假设你的 save_and_restart 是重启并检查状态的无参函数
+    if save_and_restart; then
+        echo -e "${GREEN}✔ WARP 出站配置成功并已生效！${PLAIN}"
         return 0
     else
-        echo -e "${RED}✘ 配置应用失败。${PLAIN}"
+        echo -e "${RED}✘ 重启 sing-box 失败，请检查服务状态。${PLAIN}"
         return 1
     fi
 }
