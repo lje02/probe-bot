@@ -400,51 +400,27 @@ manage_configs() {
 # 简单的解析函数：支持 ss:// 和 socks5://
 parse_proxy_link() {
     local link=$1
-    local content decoded user_info server_info
-    
-    # 初始化变量，防止上一次的结果干扰
-    R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""
-
     if [[ "$link" =~ ^ss:// ]]; then
-        hop_type=1
-        content=$(echo "${link#ss://}" | cut -d'#' -f1)
-
-        if [[ "$content" == *"@"* ]]; then
-            # --- SIP002 格式 (userinfo-b64@host:port) ---
-            local user_info_b64=$(echo "$content" | cut -d'@' -f1)
-            server_info=$(echo "$content" | cut -d'@' -f2)
-            
-            # 容错解码 (处理 URL Safe 和 填充)
-            user_info=$(echo "$user_info_b64" | tr '_-' '/+' | awk '{printf "%s%s", $0, substr("===", 1, (4-length($0)%4)%4)}' | base64 -d 2>/dev/null)
-            R_METHOD=$(echo "$user_info" | cut -d':' -f1)
-            R_PASS=$(echo "$user_info" | cut -d':' -f2)
-            R_ADDR=$(echo "$server_info" | cut -d':' -f1)
-            R_PORT=$(echo "$server_info" | cut -d':' -f2 | cut -d'/' -f1) # 过滤可能存在的插件参数
-        else
-            # --- 老版本格式 (整个全包 Base64) ---
-            decoded=$(echo "$content" | tr '_-' '/+' | awk '{printf "%s%s", $0, substr("===", 1, (4-length($0)%4)%4)}' | base64 -d 2>/dev/null)
-            if [[ "$decoded" =~ ^(.+):(.+)@(.+):([0-9]+) ]]; then
-                R_METHOD="${BASH_REMATCH[1]}"
-                R_PASS="${BASH_REMATCH[2]}"
-                R_ADDR="${BASH_REMATCH[3]}"
-                R_PORT="${BASH_REMATCH[4]}"
-            fi
+        # 简单处理 ss://base64#tag 格式
+        local content=$(echo "${link#ss://}" | cut -d'#' -f1)
+        # 处理可能存在的 URL Safe Base64
+        local decoded=$(echo "$content" | tr '_-' '/+' | base64 -d 2>/dev/null)
+        if [[ "$decoded" =~ ^(.+):(.+)@(.+):([0-9]+) ]]; then
+            R_METHOD="${BASH_REMATCH[1]}"
+            R_PASS="${BASH_REMATCH[2]}"
+            R_ADDR="${BASH_REMATCH[3]}"
+            R_PORT="${BASH_REMATCH[4]}"
         fi
-
     elif [[ "$link" =~ ^socks5:// ]]; then
-        hop_type=2
-        content=${link#socks5://}
-        content=$(echo "$content" | cut -d'#' -f1)
-        if [[ "$content" == *"@"* ]]; then
-            user_info=$(echo "$content" | cut -d'@' -f1)
-            server_info=$(echo "$content" | cut -d'@' -f2)
-            R_USER=$(echo "$user_info" | cut -d':' -f1)
-            R_PASS=$(echo "$user_info" | cut -d':' -f2)
-            R_ADDR=$(echo "$server_info" | cut -d':' -f1)
-            R_PORT=$(echo "$server_info" | cut -d':' -f2)
-        else
-            R_ADDR=$(echo "$content" | cut -d':' -f1)
-            R_PORT=$(echo "$content" | cut -d':' -f2)
+        # 简单处理 socks5://user:pass@host:port
+        if [[ "$link" =~ socks5://(.+):(.+)@(.+):([0-9]+) ]]; then
+            R_USER="${BASH_REMATCH[1]}"
+            R_PASS="${BASH_REMATCH[2]}"
+            R_ADDR="${BASH_REMATCH[3]}"
+            R_PORT="${BASH_REMATCH[4]}"
+        elif [[ "$link" =~ socks5://(.+):([0-9]+) ]]; then
+            R_ADDR="${BASH_REMATCH[1]}"
+            R_PORT="${BASH_REMATCH[2]}"
         fi
     fi
 }
