@@ -401,27 +401,38 @@ manage_configs() {
 parse_proxy_link() {
     local link=$1
     if [[ "$link" =~ ^ss:// ]]; then
-        # 简单处理 ss://base64#tag 格式
+        # 去掉协议头和后缀
         local content=$(echo "${link#ss://}" | cut -d'#' -f1)
-        # 处理可能存在的 URL Safe Base64
-        local decoded=$(echo "$content" | tr '_-' '/+' | base64 -d 2>/dev/null)
-        if [[ "$decoded" =~ ^(.+):(.+)@(.+):([0-9]+) ]]; then
-            R_METHOD="${BASH_REMATCH[1]}"
-            R_PASS="${BASH_REMATCH[2]}"
-            R_ADDR="${BASH_REMATCH[3]}"
-            R_PORT="${BASH_REMATCH[4]}"
+        
+        # 处理可能的 SIP002 格式 (BASE64@HOST:PORT)
+        if [[ "$content" == *"@"* ]]; then
+            local user_info_b64=$(echo "$content" | cut -d'@' -f1)
+            local server_info=$(echo "$content" | cut -d'@' -f2)
+            
+            # 解码用户信息 (method:password)
+            local user_info=$(echo "$user_info_b64" | base64 -d 2>/dev/null)
+            R_METHOD=$(echo "$user_info" | cut -d':' -f1)
+            R_PASS=$(echo "$user_info" | cut -d':' -f2)
+            
+            R_ADDR=$(echo "$server_info" | cut -d':' -f1)
+            R_PORT=$(echo "$server_info" | cut -d':' -f2)
+            hop_type=1
         fi
     elif [[ "$link" =~ ^socks5:// ]]; then
-        # 简单处理 socks5://user:pass@host:port
-        if [[ "$link" =~ socks5://(.+):(.+)@(.+):([0-9]+) ]]; then
-            R_USER="${BASH_REMATCH[1]}"
-            R_PASS="${BASH_REMATCH[2]}"
-            R_ADDR="${BASH_REMATCH[3]}"
-            R_PORT="${BASH_REMATCH[4]}"
-        elif [[ "$link" =~ socks5://(.+):([0-9]+) ]]; then
-            R_ADDR="${BASH_REMATCH[1]}"
-            R_PORT="${BASH_REMATCH[2]}"
+        # 格式: socks5://user:pass@host:port
+        local content=${link#socks5://}
+        if [[ "$content" == *"@"* ]]; then
+            local user_info=$(echo "$content" | cut -d'@' -f1)
+            local server_info=$(echo "$content" | cut -d'@' -f2)
+            R_USER=$(echo "$user_info" | cut -d':' -f1)
+            R_PASS=$(echo "$user_info" | cut -d':' -f2)
+            R_ADDR=$(echo "$server_info" | cut -d':' -f1)
+            R_PORT=$(echo "$server_info" | cut -d':' -f2)
+        else
+            R_ADDR=$(echo "$content" | cut -d':' -f1)
+            R_PORT=$(echo "$content" | cut -d':' -f2)
         fi
+        hop_type=2
     fi
 }
 
@@ -432,7 +443,7 @@ chain_proxy() {
 
     while true; do
         clear
-        echo -e "${YELLOW}--- 链式代理管理 (支持多级跳转) ---${PLAIN}"
+        echo -e "${YELLOW}--- 链式代理 (支持多级跳转) ---${PLAIN}"
         echo "1. 添加/追加跳转节点"
         echo "2. 查看当前转发链路"
         echo "3. 清空特定入站规则"
@@ -604,7 +615,7 @@ manage_routing() {
 
                 # --- 3. 出站配置 (移除引发报错的非法字段) ---
                 echo -e "\n${CYAN}3. 请配置目标出站:${PLAIN}"
-                echo "1) 粘贴链接 | 2) 手动输入 | 3) 自动选择 (URL-Test) | 4) 节点组 (Selector)"
+                echo "1) 粘贴链接 | 2) 手动输入 | 3) 自动优选 (URL-Test) | 4) 节点组 (Selector)"
                 read -p "选择 [1-4]: " out_mode
                 
                 OUT_TAG="route-out-$(date +%s)"
@@ -827,7 +838,7 @@ while true; do
     echo "7. 备份 / 还原"
     echo "8. 开启 BBR 网络加速"
     echo "9. 申请 SSL 域名证书 (ACME)"
-    echo "10 出站添加/管理"
+    echo "10. 添加出站/用于自动/负载"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
