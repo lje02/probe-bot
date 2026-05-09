@@ -69,7 +69,7 @@ register_warp_account() {
     
     local response=$(curl -s --connect-timeout 10 -X POST "https://api.cloudflareclient.com/v0a2445/reg" \
         -H "Content-Type: application/json" \
-        echo "DEBUG Response: $response"
+    echo "DEBUG Response: $response"
         -d "{\"install_id\":\"\",\"tos\":\"$(date -u +%FT%T.000Z)\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
     if [[ "$response" != *"token"* ]]; then
