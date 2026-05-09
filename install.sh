@@ -1128,14 +1128,14 @@ register_warp_account() {
 }
 
 # ========== 添加 WARP 出站 ==========
-add_warp_outbound_singbox() {
+add_warp_outbound() {
     # 检查必要变量
     if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" || -z "$W_PRIV" ]]; then
         echo -e "${RED}✘ 错误：缺少 WARP 账户数据，请先运行注册函数。${PLAIN}"
         return 1
     fi
 
-    echo -e "${YELLOW}正在向 sing-box 配置添加 WARP 出站...${PLAIN}"
+    echo -e "${YELLOW}正在配置 sing-box WARP 出站 (warp-out)...${PLAIN}"
 
     # 构建带 CIDR 后缀的地址数组
     local addresses_json="["
@@ -1144,11 +1144,13 @@ add_warp_outbound_singbox() {
     [[ -n "$W_V6" ]] && addresses_json+="\"${W_V6}/128\""
     addresses_json+="]"
 
-    # 使用 jq 注入正确格式的出站（peers 结构）
+    local tmp_cfg="/tmp/sing-box-tmp-$$.json"
+
+    # 先删除所有旧 warp-out，再添加新格式（peers 结构）
     jq --arg priv "$W_PRIV" \
        --argjson addresses "$addresses_json" \
        --argjson res "$W_RES_JSON" \
-       '.outbounds += [{
+       'del(.outbounds[] | select(.tag == "warp-out")) | .outbounds += [{
             "type": "wireguard",
             "tag": "warp-out",
             "local_address": $addresses,
@@ -1161,19 +1163,21 @@ add_warp_outbound_singbox() {
                 "reserved": $res
             }],
             "mtu": 1280
-        }]' "$CONFIG_FILE" > "/tmp/sing-box-tmp-$$.json"
+        }]' "$CONFIG_FILE" > "$tmp_cfg"
 
-    if [[ $? -eq 0 ]]; then
-        if save_and_restart "/tmp/sing-box-tmp-$$.json"; then
-            echo -e "${GREEN}✔ WARP 出站配置成功！${PLAIN}"
-            return 0
-        else
-            echo -e "${RED}✘ 写入或重启失败。${PLAIN}"
-        fi
-    else
+    if [[ $? -ne 0 || ! -s "$tmp_cfg" ]]; then
         echo -e "${RED}✘ jq 处理失败，请检查配置文件 JSON 格式。${PLAIN}"
+        rm -f "$tmp_cfg"
+        return 1
     fi
-    return 1
+
+    if save_and_restart "$tmp_cfg"; then
+        echo -e "${GREEN}✔ WARP 出站配置成功！${PLAIN}"
+        return 0
+    else
+        echo -e "${RED}✘ 配置应用失败。${PLAIN}"
+        return 1
+    fi
 }
 
 toggle_warp() {
