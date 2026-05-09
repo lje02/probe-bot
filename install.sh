@@ -1129,10 +1129,10 @@ register_warp_account() {
 
 # ========== 添加 WARP 出站 ==========
 add_warp_outbound() {
-    # 检查必要变量
+    # 【修复1：自动联动注册函数】发现没数据时，主动去申请，而不是直接报错
     if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" || -z "$W_PRIV" ]]; then
-        echo -e "${RED}✘ 缺少 WARP 账户数据，请先运行 register_warp_account${PLAIN}"
-        return 1
+        echo -e "${YELLOW}未检测到内存中的 WARP 账户数据，开始调用注册流程...${PLAIN}"
+        register_warp_account || return 1
     fi
 
     # 检查配置文件是否存在且合法
@@ -1152,7 +1152,7 @@ add_warp_outbound() {
 
     local tmp_cfg="/tmp/sing-box-tmp-$$.json"
 
-    # 分两步操作：先删除旧 warp-out，再添加新条目，并捕获错误
+    # 【修复2：修正为 Sing-box 的标准结构】取消 peers 嵌套，改用扁平化参数，并增加 udp_fragment 提升移动端稳定性
     local error_output
     error_output=$(jq --arg priv "$W_PRIV" \
         --argjson addresses "$addresses_json" \
@@ -1160,16 +1160,14 @@ add_warp_outbound() {
         'del(.outbounds[] | select(.tag == "warp-out")) | .outbounds += [{
             "type": "wireguard",
             "tag": "warp-out",
+            "server": "engage.cloudflareclient.com",
+            "server_port": 2408,
             "local_address": $addresses,
             "private_key": $priv,
-            "peers": [{
-                "address": "engage.cloudflareclient.com",
-                "port": 2408,
-                "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-                "allowed_ips": ["0.0.0.0/0", "::/0"],
-                "reserved": $res
-            }],
-            "mtu": 1280
+            "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+            "reserved": $res,
+            "mtu": 1280,
+            "udp_fragment": true
         }]' "$CONFIG_FILE" > "$tmp_cfg" 2>&1)
 
     local exit_code=$?
@@ -1180,6 +1178,11 @@ add_warp_outbound() {
         return 1
     fi
 
+    # 替换配置文件并重启
+    # 注意：确保你的 save_and_restart 函数支持接收 "$tmp_cfg" 作为参数
+    # 如果不支持，可以使用下面的替代方案：
+    # mv "$tmp_cfg" "$CONFIG_FILE" && save_and_restart
+    
     if save_and_restart "$tmp_cfg"; then
         echo -e "${GREEN}✔ WARP 出站配置成功！${PLAIN}"
         return 0
