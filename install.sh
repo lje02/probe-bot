@@ -1012,6 +1012,113 @@ add_outbound() {
     done
 }
 
+# ========== 注册 WARP 账户 ==========
+register_warp_account() {
+    W_PRIV=""; W_V4=""; W_V6=""; W_RES_JSON=""
+
+    # 1. 依赖检查与安装
+    local deps=("wireguard-tools" "jq" "curl" "bsdmainutils")
+    local missing=()
+    for dep in "${deps[@]}"; do
+        if ! command -v "${dep%% *}" >/dev/null 2>&1; then
+            missing+=("$dep")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}安装依赖: ${missing[*]}${PLAIN}"
+        if command -v apt &>/dev/null; then
+            apt update && apt install -y "${missing[@]}"
+        elif command -v yum &>/dev/null; then
+            yum install -y "${missing[@]}"
+        else
+            echo -e "${RED}请手动安装: ${missing[*]}${PLAIN}"
+            return 1
+        fi
+    fi
+
+    # 2. 生成 WireGuard 密钥
+    local priv pub
+    priv=$(wg genkey) || { echo -e "${RED}生成私钥失败${PLAIN}"; return 1; }
+    pub=$(echo "$priv" | wg pubkey) || { echo -e "${RED}生成公钥失败${PLAIN}"; return 1; }
+
+    # 3. 调用 Cloudflare API（带端点自愈）
+    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
+    local tos_date
+    if date -u +%FT%T.000Z >/dev/null 2>&1; then
+        tos_date=$(date -u +%FT%T.000Z)
+    else
+        tos_date="2024-01-01T00:00:00.000Z"
+    fi
+
+    local api_endpoint="https://api.cloudflareclient.com/v0a2158/reg"
+    local user_agent="okhttp/3.12.1"
+    local response
+    response=$(curl -s --connect-timeout 10 \
+        -H "Content-Type: application/json" \
+        -H "User-Agent: $user_agent" \
+        -X POST "$api_endpoint" \
+        -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+
+    # 备用旧版端点
+    if [[ -z "$response" || "$response" != "{"* ]]; then
+        api_endpoint="https://api.cloudflareclient.com/v0a2445/reg"
+        response=$(curl -s --connect-timeout 10 \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: $user_agent" \
+            -X POST "$api_endpoint" \
+            -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+    fi
+
+    # 4. 基础检查
+    if [[ "$response" != *"token"* ]]; then
+        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
+        echo -e "${RED}API 返回：${response:-<empty>}${PLAIN}"
+        return 1
+    fi
+
+    # 5. 解析地址（自适应新旧路径）
+    W_V4=$(echo "$response" | jq -r '(.config.interface.addresses.v4 // .config.interface.address.v4 // empty)' 2>/dev/null)
+    W_V6=$(echo "$response" | jq -r '(.config.interface.addresses.v6 // .config.interface.address.v6 // empty)' 2>/dev/null)
+
+    # 6. 解析 reserved（必须成功）
+    local client_id
+    client_id=$(echo "$response" | jq -r '.config.clientId // empty' 2>/dev/null)
+    if [[ -z "$client_id" || "$client_id" == "null" ]]; then
+        echo -e "${RED}✘ 无法提取客户端 ID${PLAIN}"
+        return 1
+    fi
+
+    # 兼容不同系统的 hexdump/od
+    local decoded
+    decoded=$(echo "$client_id" | base64 -d 2>/dev/null)
+    if command -v od &>/dev/null; then
+        W_RES_JSON=$(echo "$decoded" | od -An -t u1 --endian=big | tr -s ' ' ',' | sed 's/^,//' | awk '{print "["$0"]"}')
+    else
+        W_RES_JSON=$(echo "$decoded" | hexdump -v -e '/1 "%d,"' | sed 's/,$//' | awk '{print "["$0"]"}')
+    fi
+
+    if [[ -z "$W_RES_JSON" || "$W_RES_JSON" == "[]" ]]; then
+        echo -e "${RED}✘ 解码 reserved 失败${PLAIN}"
+        return 1
+    fi
+
+    # 7. 保存私钥
+    W_PRIV="$priv"
+
+    # 8. 结果确认（至少有一个地址）
+    if [[ -z "$W_V4" && -z "$W_V6" ]]; then
+        echo -e "${RED}✘ 解析 WARP 账户失败（无可用地址）${PLAIN}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
+    [[ -n "$W_V4" ]] && echo -e "   IPv4: ${W_V4}"
+    [[ -n "$W_V6" ]] && echo -e "   IPv6: ${W_V6}"
+    return 0
+}
+
+# ========== 添加 WARP 出站 ==========
 add_warp_outbound() {
     # 检查至少有一个地址且 reserved 非空
     if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" ]]; then
@@ -1021,7 +1128,7 @@ add_warp_outbound() {
 
     echo -e "${YELLOW}正在配置 WARP 出站 (warp-out)...${PLAIN}"
 
-    # 动态构建 local_address 数组（只包含非空地址）
+    # 动态构建 local_address 数组
     local addresses_json="["
     [[ -n "$W_V4" ]] && addresses_json+="\"$W_V4\""
     [[ -n "$W_V4" && -n "$W_V6" ]] && addresses_json+=","
