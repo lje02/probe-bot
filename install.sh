@@ -448,133 +448,156 @@ parse_proxy_link() {
     fi
 }
 
+# --- 链式代理：链路管理与强制重定向 ---
 chain_proxy() {
     local cp_choice idx LOCAL_TAG RAW_LINK R_ADDR R_PORT R_METHOD R_PASS R_USER \
-          hop_type SKIP_TLS OUT_TAG OUT_JSON CURRENT_OUTBOUND
+          hop_type SKIP_TLS OUT_TAG OUT_JSON CURRENT_OUTBOUND NEW_RULE_JSON
 
     while true; do
         clear
-        echo -e "${YELLOW}--- 链式代理 (支持 SS/Socks5/HTTPS 多级跳转) ---${PLAIN}"
-        echo "1. 添加/追加跳转节点 (A -> B -> C)"
-        echo "2. 查看当前转发链路"
-        echo "3. 清空特定入站规则 (重置为直连)"
-        echo "0. 返回主菜单"
+        echo -e "${YELLOW}================================================${PLAIN}"
+        echo -e "${YELLOW}           链式代理与链路管理           ${PLAIN}"
+        echo -e "${YELLOW}================================================${PLAIN}"
+        echo " 1. 添加跳转节点 链式)"
+        echo " 2. 查看当前活跃链路"
+        echo " 3. 重置入站规则 (恢复直连)"
+        echo " 0. 返回主菜单"
         echo "------------------------------------------------"
         read -p "请选择: " cp_choice
 
+
+        # --- 0. 退出逻辑 ---
+        [[ "$cp_choice" == "0" ]] && return 0
+
+
         case $cp_choice in
             1)
-                # --- A. 选择入站 ---
-                echo -e "\n${YELLOW}选择本地入站节点 (流量起点):${PLAIN}"
+                # --- A. 选择入站节点 ---
+                echo -e "\n${CYAN}[步骤1] 选择流量进入的入站 (Inbound):${PLAIN}"
                 jq -r '.inbounds | keys[] as $i | "\($i+1)) Tag: \(.[$i].tag) [\(.[$i].type)]"' "$CONFIG_FILE"
                 read -p "选择序号: " idx
                 [[ -z "$idx" ]] && continue
                 LOCAL_TAG=$(jq -r ".inbounds[$((idx-1))].tag" "$CONFIG_FILE")
                 
-                # 获取当前入站绑定的出口 (用于 detour)
+                # 精准获取当前出口 (兼容数组和字符串格式)
                 CURRENT_OUTBOUND=$(jq -r --arg itag "$LOCAL_TAG" '
                     .route.rules[] | 
                     select(if .inbound | type == "array" then .inbound | contains([$itag]) else .inbound == $itag end) | 
                     .outbound' "$CONFIG_FILE" | head -n 1)
 
-                # --- B. 获取新节点 ---
-                echo -e "\n${CYAN}请输入新节点链接 (直接回车进入手动模式):${PLAIN}"
-                read -p "> " RAW_LINK
-                [[ -n "$RAW_LINK" ]] && parse_proxy_link "$RAW_LINK"
+
+                # --- B. 获取新节点信息 ---
+                echo -e "\n${CYAN}[步骤2] 配置出口节点 (Outbound):${PLAIN}"
+                read -p "粘贴链接 (回车手动输入): " RAW_LINK
+                
+                # 清理旧变量
+                R_ADDR=""; R_PORT=""; R_METHOD=""; R_PASS=""; R_USER=""; hop_type=""
+
+                if [[ -n "$RAW_LINK" ]]; then
+                    parse_proxy_link "$RAW_LINK"
+                fi
 
                 if [[ -z "$R_ADDR" ]]; then
-                    echo -e "\n${YELLOW}手动输入模式:${PLAIN}"
-                    echo "1) Shadowsocks (SS)"
-                    echo "2) Socks5"
-                    echo "3) HTTPS (HTTP over TLS)"
-                    read -p "请选择协议 [1-3]: " hop_type
+                    echo -e "\n${YELLOW}>> 手动输入模式:${PLAIN}"
+                    echo "1) Shadowsocks  2) Socks5  3) HTTPS"
+                    read -p "协议选择: " hop_type
                     case $hop_type in
-                        1)
-                            read -p "SS 地址: " R_ADDR
-                            read -p "SS 端口 [默认 8388]: " R_PORT; R_PORT=${R_PORT:-8388}
-                            read -p "加密方式 [默认 aes-128-gcm]: " R_METHOD; R_METHOD=${R_METHOD:-aes-128-gcm}
-                            read -p "密码: " R_PASS ;;
-                        2)
-                            read -p "Socks5 地址: " R_ADDR
-                            read -p "Socks5 端口 [默认 1080]: " R_PORT; R_PORT=${R_PORT:-1080}
-                            read -p "用户名 (可选): " R_USER; read -p "密码 (可选): " R_PASS ;;
-                        3)
-                            read -p "HTTPS 地址: " R_ADDR
-                            read -p "HTTPS 端口 [默认 443]: " R_PORT; R_PORT=${R_PORT:-443}
-                            read -p "用户名 (可选): " R_USER; read -p "密码 (可选): " R_PASS ;;
-                        *) echo "无效选择"; continue ;;
+                        1) read -p "地址: " R_ADDR; read -p "端口[8388]: " R_PORT; R_PORT=${R_PORT:-8388}
+                           read -p "加密[aes-128-gcm]: " R_METHOD; R_METHOD=${R_METHOD:-aes-128-gcm}
+                           read -p "密码: " R_PASS ;;
+                        2) read -p "地址: " R_ADDR; read -p "端口[1080]: " R_PORT; R_PORT=${R_PORT:-1080}
+                           read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
+                        3) read -p "地址: " R_ADDR; read -p "端口[443]: " R_PORT; R_PORT=${R_PORT:-443}
+                           read -p "用户: " R_USER; read -p "密码: " R_PASS ;;
                     esac
                 fi
 
-                # --- C. HTTPS 证书询问 ---
+                [[ -z "$R_ADDR" ]] && echo -e "${RED}输入无效${PLAIN}" && sleep 1 && continue
+
+
+                # --- C. HTTPS 证书预处理 ---
                 SKIP_TLS="n"
                 if [[ "$hop_type" == "3" || "$RAW_LINK" =~ ^https:// ]]; then
-                    read -p "是否跳过 HTTPS 证书验证 (insecure)? [y/N]: " SKIP_TLS
+                    read -p "是否跳过证书验证 (Insecure)? [y/N]: " SKIP_TLS
                     SKIP_TLS=${SKIP_TLS:-n}
                 fi
 
-                # --- D. 构造 JSON ---
+
+                # --- D. 构造 JSON 对象 ---
                 OUT_TAG="chain-$(date +%s)"
+
+                # 构造节点 JSON
                 OUT_JSON=$(jq -n \
                     --arg t "$OUT_TAG" --arg s "$R_ADDR" --arg p "$R_PORT" \
                     --arg m "$R_METHOD" --arg pass "$R_PASS" --arg u "$R_USER" \
                     --arg d "$CURRENT_OUTBOUND" --arg ht "$hop_type" --arg skip "$SKIP_TLS" \
                     '
-                    (
-                        if $ht == "1" then
-                            {type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}
-                        elif $ht == "2" then
-                            {type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"} + 
-                            (if $u != "" then {username: $u, password: $pass} else {} end)
-                        elif $ht == "3" then
-                            {type: "http", tag: $t, server: $s, server_port: ($p|tonumber), tls: {enabled: true, insecure: ($skip == "y" or $skip == "Y")}} + 
-                            (if $u != "" then {username: $u, password: $pass} else {} end)
-                        else empty end
-                    ) 
+                    (if $ht == "1" then
+                        {type: "shadowsocks", tag: $t, server: $s, server_port: ($p|tonumber), method: $m, password: $pass}
+                    elif $ht == "2" then
+                        {type: "socks", tag: $t, server: $s, server_port: ($p|tonumber), version: "5"} + (if $u != "" then {username: $u, password: $pass} else {} end)
+                    elif $ht == "3" then
+                        {type: "http", tag: $t, server: $s, server_port: ($p|tonumber), tls: {enabled: true, insecure: ($skip == "y" or $skip == "Y")}} + (if $u != "" then {username: $u, password: $pass} else {} end)
+                    else empty end) 
                     | if ($d != "" and $d != "null" and $d != "direct") then . + {detour: $d} else . end
                     ' -c)
 
-                # --- E. 写入与检查 ---
-                jq --argjson obj "$OUT_JSON" --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '
-                    .outbounds += [$obj] |
-                    (.route.rules |= map(
-                        if (if .inbound | type == "array" then .inbound | contains([$itag]) else .inbound == $itag end) 
-                        then .outbound = $otag else . end
-                    ))
+                # 构造路由规则 JSON (强制为数组格式)
+                NEW_RULE_JSON=$(jq -n --arg itag "$LOCAL_TAG" --arg otag "$OUT_TAG" '{"inbound": [$itag], "outbound": $otag}')
+
+
+                # --- E. 物理写入与安全检查 ---
+                echo -e "\n${CYAN}[步骤3] 正在应用配置...${PLAIN}"
+
+                # 逻辑：先在 outbounds 添加节点，再重构 route.rules (新规则置顶 + 过滤掉该入站的旧规则)
+                jq --argjson newNode "$OUT_JSON" --argjson newRule "$NEW_RULE_JSON" --arg itag "$LOCAL_TAG" '
+                    .outbounds += [$newNode] |
+                    .route.rules = (
+                        [$newRule] + 
+                        [ .route.rules[] | select(
+                            if .inbound then 
+                                (if .inbound | type == "array" then .inbound | contains([$itag]) | not else .inbound != $itag end)
+                            else true end
+                        ) ]
+                    )
                 ' "$CONFIG_FILE" > tmp.json
 
-                if /usr/local/bin/sing-box check -c tmp.json > /dev/null 2>&1; then
+                if [[ -s tmp.json ]] && /usr/local/bin/sing-box check -c tmp.json > /dev/null 2>&1; then
                     mv tmp.json "$CONFIG_FILE"
                     systemctl restart sing-box
-                    echo -e "${GREEN}✔ 链路已更新: $LOCAL_TAG -> $OUT_TAG -> ${CURRENT_OUTBOUND:-"互联网"}${PLAIN}"
+                    echo -e "${GREEN}✔ 配置成功！${PLAIN}"
+                    echo -e "链路详情: ${BLUE}$LOCAL_TAG${PLAIN} -> ${GREEN}$OUT_TAG${PLAIN} -> ${YELLOW}${CURRENT_OUTBOUND:-"互联网"}${PLAIN}"
                 else
-                    echo -e "${RED}✖ 语法检查失败，操作已撤销！${PLAIN}"
+                    echo -e "${RED}✖ 错误：配置校验失败，已回滚。${PLAIN}"
                     /usr/local/bin/sing-box check -c tmp.json
                     rm -f tmp.json
                 fi
-                pause ;;
+                pause
+                ;;
 
-            2) # 查看链路
-                echo -e "\n${YELLOW}当前活跃转发链路:${PLAIN}"
+            2)
+                echo -e "\n${YELLOW}--- 当前活跃转发链路 ---${PLAIN}"
                 jq -r '.route.rules[] | select(.inbound != null) | "入站: \(.inbound)  ==>  出口: \(.outbound)"' "$CONFIG_FILE"
-                pause ;;
+                pause
+                ;;
 
-            3) # 清空规则
-                echo -e "\n${YELLOW}选择要重置的入站节点:${PLAIN}"
+            3)
+                echo -e "\n${YELLOW}选择要重置为直连的入站:${PLAIN}"
+                # 提取所有有规则的入站标签
                 local in_tags=$(jq -r '.route.rules[] | select(.inbound != null) | .inbound | if type == "array" then .[0] else . end' "$CONFIG_FILE")
                 echo "$in_tags" | cat -n
                 read -p "选择序号: " del_idx
                 local DEL_IN_TAG=$(echo "$in_tags" | sed -n "${del_idx}p")
+
                 if [[ -n "$DEL_IN_TAG" ]]; then
                     jq --arg itag "$DEL_IN_TAG" '
-                        (.route.rules |= map(if (if .inbound | type == "array" then .inbound | contains([$itag]) else .inbound == $itag end) then .outbound = "direct" else . end))
+                        .route.rules |= map(if (if .inbound | type == "array" then .inbound | contains([$itag]) else .inbound == $itag end) then .outbound = "direct" else . end)
                     ' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
                     systemctl restart sing-box
-                    echo -e "${GREEN}✔ 已重置为直连。${PLAIN}"
+                    echo -e "${GREEN}✔ 入站 [$DEL_IN_TAG] 已恢复直连。${PLAIN}"
                 fi
-                pause ;;
-
-            0) return 0 ;;
+                pause
+                ;;
         esac
     done
 }
