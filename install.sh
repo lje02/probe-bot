@@ -398,104 +398,86 @@ add_node() {
 
 manage_configs() {
     clear
-    echo -e "${YELLOW}--- 管理节点配置 ---${PLAIN}"
+    echo -e "${YELLOW}--- 节点配置查看 ---${PLAIN}"
     local count=$(jq '.inbounds | length' "$CONFIG_FILE")
     if [[ "$count" -eq 0 ]]; then echo "暂无入站节点"; pause; return; fi
 
+    # 1. 列表显示所有节点
     jq -r '.inbounds[] | "Tag: \(.tag) | Type: \(.type) | Port: \(.listen_port)"' "$CONFIG_FILE" | cat -n
-    read -p "请选择序号 (q返回): " idx
+    read -p "请选择要查看的序号 (q返回): " idx
     [[ "$idx" == "q" ]] && return
 
+    # 2. 获取节点基本信息
     local TAG=$(jq -r ".inbounds[$(($idx-1))].tag" "$CONFIG_FILE")
-    echo -e "\n1. 查看详情/链接 | 2. 修改端口 | 3. 删除配置"
-    read -p "选择操作: " op
-    case $op in
-        1)
-            local CONF=$(jq -c ".inbounds[$(($idx-1))]" "$CONFIG_FILE")
-            local TYPE=$(echo "$CONF" | jq -r .type)
-            local PORT=$(echo "$CONF" | jq -r .listen_port)
-            local IP=$(get_ip)
+    local CONF=$(jq -c ".inbounds[$(($idx-1))]" "$CONFIG_FILE")
+    local TYPE=$(echo "$CONF" | jq -r .type)
+    local PORT=$(echo "$CONF" | jq -r .listen_port)
+    local IP=$(get_ip)
 
-            echo -e "\n${GREEN}================ 原始 JSON 配置 ================${PLAIN}"
-            echo "$CONF" | jq .
-            echo -e "${GREEN}===============================================${PLAIN}"
+    # 3. 打印详情
+    echo -e "\n${GREEN}================ 原始 JSON 配置 ================${PLAIN}"
+    echo "$CONF" | jq .
+    echo -e "${GREEN}===============================================${PLAIN}"
 
-            echo -e "\n${YELLOW}>>>> 节点分享链接 <<<<${PLAIN}"
-            if [[ -f "$LINK_DIR/${TAG}.link" ]]; then
-                echo -e "${BLUE}$(cat "$LINK_DIR/${TAG}.link")${PLAIN}"
-            else
-                echo -e "${RED}未找到持久化链接文件，尝试根据当前配置生成...${PLAIN}"
-                
-                # 尝试从 TLS 配置中提取域名，如果提取不到则使用 IP
-                local SNI=$(echo "$CONF" | jq -r '.tls.server_name // ""')
-                local HOST=${SNI:-$IP}
+    echo -e "\n${YELLOW}>>>> 节点分享链接 <<<<${PLAIN}"
+    
+    # 优先使用持久化文件，不存在则动态生成
+    if [[ -f "$LINK_DIR/${TAG}.link" ]]; then
+        echo -e "${BLUE}$(cat "$LINK_DIR/${TAG}.link")${PLAIN}"
+    else
+        echo -e "${RED}未找到持久化链接文件，尝试根据当前配置生成...${PLAIN}"
+        
+        # 尝试从 TLS 配置中提取域名，如果提取不到则使用 IP
+        local SNI=$(echo "$CONF" | jq -r '.tls.server_name // ""')
+        local HOST=${SNI:-$IP}
 
-                case $TYPE in
-                    vless)
-                        local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
-                        local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0] // ""')
-                        if [[ -n "$SID" ]]; then
-                            echo -e "${RED}Reality 节点的公钥不存储在配置文件中，无法生成完整链接，请查阅初始安装记录。${PLAIN}"
-                        else
-                            local WSPATH=$(echo "$CONF" | jq -r '.transport.path // ""')
-                            echo -e "${BLUE}vless://$UUID@$HOST:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#$TAG${PLAIN}"
-                        fi
-                        ;;
-                    tuic)
-                        local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
-                        local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                        echo -e "${BLUE}tuic://$UUID:$PASS@$HOST:$PORT?congestion_control=bbr&sni=$SNI&alpn=h3#$TAG${PLAIN}"
-                        ;;
-                    hysteria2)
-                        local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                        echo -e "${BLUE}hysteria2://$PASS@$HOST:$PORT?sni=$SNI#$TAG${PLAIN}"
-                        ;;
-                    shadowsocks)
-                        local METHOD=$(echo "$CONF" | jq -r .method); local PASS=$(echo "$CONF" | jq -r .password)
-                        local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
-                        echo -e "${BLUE}ss://$SS_BASE64@$IP:$PORT#$TAG${PLAIN}"
-                        ;;
-                    http)
-                        # --- 新增 HTTPS 链接还原 ---
-                        local USER=$(echo "$CONF" | jq -r '.users[0].username // ""')
-                        local PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
-                        if [[ -n "$USER" ]]; then
-                            echo -e "${BLUE}https://$USER:$PASS@$HOST:$PORT#$TAG${PLAIN}"
-                        else
-                            echo -e "${BLUE}https://$HOST:$PORT#$TAG${PLAIN}"
-                        fi
-                        ;;
-                    trojan)
-                        # --- 新增 Trojan 链接还原 ---
-                        local PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
-                        local INSECURE=$(echo "$CONF" | jq -r '.tls.insecure // false')
-                        local INS_VAL="0"; [[ "$INSECURE" == "true" ]] && INS_VAL="1"
-                        echo -e "${BLUE}trojan://$PASS@$HOST:$PORT?security=tls&sni=$SNI&allowInsecure=$INS_VAL#$TAG${PLAIN}"
-                        ;;
-                    *)
-                        echo -e "${RED}暂不支持该协议 ($TYPE) 的链接还原${PLAIN}"
-                        ;;
-                esac
-            fi
-            pause
-            ;;
-        2)
-            read -p "新端口: " NP
-            jq ".inbounds[$(($idx-1))].listen_port = ($NP|tonumber)" "$CONFIG_FILE" > tmp.json
-            if save_and_restart; then
-                echo -e "${GREEN}端口已更新为 $NP。注意：原持久化链接中的端口信息已过期。${PLAIN}"
-            fi
-            pause
-            ;;
-        3)
-            jq "del(.inbounds[$(($idx-1))])" "$CONFIG_FILE" > tmp.json
-            if save_and_restart; then
-                rm -f "$LINK_DIR/${TAG}.link"
-                echo -e "${GREEN}配置及链接文件已删除${PLAIN}"
-            fi
-            pause
-            ;;
-    esac
+        case $TYPE in
+            vless)
+                local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0] // ""')
+                if [[ -n "$SID" ]]; then
+                    echo -e "${RED}Reality 节点的公钥不存储在配置文件中，无法生成完整链接。${PLAIN}"
+                else
+                    local WSPATH=$(echo "$CONF" | jq -r '.transport.path // ""')
+                    echo -e "${BLUE}vless://$UUID@$HOST:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#$TAG${PLAIN}"
+                fi
+                ;;
+            tuic)
+                local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
+                local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                echo -e "${BLUE}tuic://$UUID:$PASS@$HOST:$PORT?congestion_control=bbr&sni=$SNI&alpn=h3#$TAG${PLAIN}"
+                ;;
+            hysteria2)
+                local PASS=$(echo "$CONF" | jq -r '.users[0].password')
+                echo -e "${BLUE}hysteria2://$PASS@$HOST:$PORT?sni=$SNI#$TAG${PLAIN}"
+                ;;
+            shadowsocks)
+                local METHOD=$(echo "$CONF" | jq -r .method); local PASS=$(echo "$CONF" | jq -r .password)
+                local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
+                echo -e "${BLUE}ss://$SS_BASE64@$IP:$PORT#$TAG${PLAIN}"
+                ;;
+            http)
+                local USER=$(echo "$CONF" | jq -r '.users[0].username // ""')
+                local PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
+                if [[ -n "$USER" ]]; then
+                    echo -e "${BLUE}https://$USER:$PASS@$HOST:$PORT#$TAG${PLAIN}"
+                else
+                    echo -e "${BLUE}https://$HOST:$PORT#$TAG${PLAIN}"
+                fi
+                ;;
+            trojan)
+                local PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
+                local INSECURE=$(echo "$CONF" | jq -r '.tls.insecure // false')
+                local INS_VAL="0"; [[ "$INSECURE" == "true" ]] && INS_VAL="1"
+                echo -e "${BLUE}trojan://$PASS@$HOST:$PORT?security=tls&sni=$SNI&allowInsecure=$INS_VAL#$TAG${PLAIN}"
+                ;;
+            *)
+                echo -e "${RED}暂不支持该协议 ($TYPE) 的链接还原${PLAIN}"
+                ;;
+        esac
+    fi
+    echo ""
+    pause
 }
 
 # 简单的解析函数：支持 ss:// 和 socks5://
