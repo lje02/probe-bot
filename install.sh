@@ -592,7 +592,7 @@ manage_routing() {
 
         case $rt_choice in
             1)
-                # 1. 选择入站
+                # --- 1. 选择入站 ---
                 echo -e "\n${CYAN}1. 请选择来源入站:${PLAIN}"
                 local in_count=$(jq '.inbounds | length' "$CONFIG_FILE")
                 [[ "$in_count" -eq 0 ]] && echo -e "${RED}无入站配置${PLAIN}" && pause && continue
@@ -602,7 +602,7 @@ manage_routing() {
                     IN_TAGS=$(echo "$in_idxs" | tr ',' '\n' | while read -r i; do jq -r ".inbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s . -c)
                 fi
 
-                # 2. 匹配目标
+                # --- 2. 匹配目标 ---
                 echo -e "\n${CYAN}2. 请选择匹配的目标:${PLAIN}"
                 echo "1) 全部流量 | 2) 域名匹配 | 3) GeoSite | 4) IP/CIDR"
                 read -p "选择 [1-4]: " target_type
@@ -613,9 +613,9 @@ manage_routing() {
                     4) read -p "IP/CIDR: " val; RULE_PART=$(echo "$val" | tr ',' '\n' | jq -R . | jq -s '{"ip_cidr": .}' -c) ;;
                 esac
 
-                # 3. 出站配置 (负载均衡补全)
+                # --- 3. 出站配置 (移除引发报错的非法字段) ---
                 echo -e "\n${CYAN}3. 请配置目标出站:${PLAIN}"
-                echo "1) 粘贴链接 | 2) 手动输入 | 3) 自动选择 (URL-Test) | 4) 负载均衡 (LB)"
+                echo "1) 粘贴链接 | 2) 手动输入 | 3) 自动选择 (URL-Test) | 4) 节点组 (Selector)"
                 read -p "选择 [1-4]: " out_mode
                 
                 OUT_TAG="route-out-$(date +%s)"
@@ -637,27 +637,35 @@ manage_routing() {
                     esac
                 elif [[ "$out_mode" == "3" || "$out_mode" == "4" ]]; then
                     echo -e "\n${YELLOW}选择代理成员 (多选用逗号):${PLAIN}"
-                    # 关键过滤：仅列出非系统节点
-                    jq -r '.outbounds | keys[] as $i | select(.[$i].type != "direct" and .[$i].type != "dns") | "\($i+1)) [\(.[$i].type)] \(.[$i].tag)"' "$CONFIG_FILE"
+                    # 过滤直连和系统节点
+                    jq -r '.outbounds | keys[] as $i | select(.[$i].type != "direct" and .[$i].type != "dns" and .[$i].type != "block") | "\($i+1)) [\(.[$i].type)] \(.[$i].tag)"' "$CONFIG_FILE"
                     read -p "序号: " m_idxs
                     [[ -z "$m_idxs" ]] && continue
                     MEMBER_TAGS=$(echo "$m_idxs" | tr ',' '\n' | while read -r i; do jq -r ".outbounds[$((i-1))].tag" "$CONFIG_FILE"; done | jq -R . | jq -s . -c)
                     OUT_TAG="group-out-$(date +%s)"
                     if [[ "$out_mode" == "3" ]]; then
+                        # URL-Test 测速自动切换
                         OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{"type":"urltest","tag":$t,"outbounds":$m,"url":"https://www.gstatic.com/generate_204","interval":"3m0s"}')
                     else
-                        # 负载均衡必须有 strategy
-                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{"type":"selector","tag":$t,"outbounds":$m,"strategy":"round-robin"}')
+                        # 真正的 Selector (删除了引发报错的 strategy 字段)
+                        OUT_JSON=$(jq -n --arg t "$OUT_TAG" --argjson m "$MEMBER_TAGS" '{"type":"selector","tag":$t,"outbounds":$m}')
                     fi
                 fi
 
-                # 4. 写入配置
+                # --- 4. 写入配置并诊断 ---
                 RULE_JSON=$(echo "$RULE_PART" | jq --arg ot "$OUT_TAG" --argjson it "$IN_TAGS" '. + {"outbound": $ot} + (if $it != null then {"inbound": $it} else {} end)' -c)
                 
                 jq --argjson out_obj "$OUT_JSON" --argjson rule_obj "$RULE_JSON" \
                    '.outbounds += [$out_obj] | .route.rules = [$rule_obj] + .route.rules' "$CONFIG_FILE" > tmp.json
                 
-                save_and_restart && echo -e "${GREEN}✔ 添加成功${PLAIN}"
+                # 显式捕捉错误原因，替代静默失败
+                if save_and_restart; then
+                    echo -e "${GREEN}✔ 添加成功，配置已生效！${PLAIN}"
+                else
+                    echo -e "${RED}✖ 配置语法检查失败！核心错误信息如下：${PLAIN}"
+                    $SB_BIN check -c tmp.json
+                    rm -f tmp.json
+                fi
                 pause ;;
 
             2)
@@ -677,7 +685,14 @@ manage_routing() {
                     jq '.outbounds |= map(select(((.tag | (startswith("route-out-") or startswith("group-out-"))) | not) or (.tag as $t | any(.route.rules[]; .outbound == $t))))' tmp_s.json > tmp.json
                     rm -f tmp_s.json
                 fi
-                save_and_restart && echo -e "${GREEN}✔ 已更新${PLAIN}"
+                
+                if save_and_restart; then
+                    echo -e "${GREEN}✔ 已更新${PLAIN}"
+                else
+                    echo -e "${RED}✖ 语法检查失败！核心错误信息如下：${PLAIN}"
+                    $SB_BIN check -c tmp.json
+                    rm -f tmp.json
+                fi
                 pause ;;
             0) return 0 ;;
         esac
