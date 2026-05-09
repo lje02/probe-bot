@@ -1121,21 +1121,22 @@ register_warp_account() {
 
 # ========== 添加 WARP 出站 ==========
 add_warp_outbound() {
-    # 检查至少有一个地址且 reserved 非空
+    # 检查必须变量（至少一个地址 + reserved 非空）
     if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" ]]; then
-        echo -e "${RED}✘ 错误：未检测到有效的 WARP 账户数据，请重新运行注册函数${PLAIN}"
+        echo -e "${RED}✘ 错误：缺少 WARP 账户数据${PLAIN}"
         return 1
     fi
 
-    echo -e "${YELLOW}正在配置 WARP 出站 (warp-out)...${PLAIN}"
+    echo -e "${YELLOW}正在向 sing-box 配置添加 WARP 出站...${PLAIN}"
 
-    # 动态构建 local_address 数组
+    # 构建带 /32、/128 后缀的地址数组
     local addresses_json="["
-    [[ -n "$W_V4" ]] && addresses_json+="\"$W_V4\""
+    [[ -n "$W_V4" ]] && addresses_json+="\"${W_V4}/32\""
     [[ -n "$W_V4" && -n "$W_V6" ]] && addresses_json+=","
-    [[ -n "$W_V6" ]] && addresses_json+="\"$W_V6\""
+    [[ -n "$W_V6" ]] && addresses_json+="\"${W_V6}/128\""
     addresses_json+="]"
 
+    # 使用 jq 注入
     jq --arg priv "$W_PRIV" \
        --argjson addresses "$addresses_json" \
        --argjson res "$W_RES_JSON" \
@@ -1148,14 +1149,14 @@ add_warp_outbound() {
             "private_key": $priv,
             "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
             "reserved": $res,
-            "mtu": 1280,
-            "udp_fragment": true
-        }]' "$CONFIG_FILE" > tmp.json
+            "mtu": 1280
+        }]' "$SINGBOX_CONFIG" > tmp.json && mv tmp.json "$SINGBOX_CONFIG"
 
-    if save_and_restart; then
-        echo -e "${GREEN}✔ WARP 出站配置成功！${PLAIN}"
+    # 重启 sing-box（假设你有这个函数）
+    if restart_singbox; then
+        echo -e "${GREEN}✔ sing-box WARP 出站配置完成！${PLAIN}"
     else
-        echo -e "${RED}✘ 写入失败，请检查配置文件格式${PLAIN}"
+        echo -e "${RED}✘ 写入或重启失败${PLAIN}"
     fi
 }
 
