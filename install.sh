@@ -425,31 +425,55 @@ manage_configs() {
                 echo -e "${BLUE}$(cat "$LINK_DIR/${TAG}.link")${PLAIN}"
             else
                 echo -e "${RED}未找到持久化链接文件，尝试根据当前配置生成...${PLAIN}"
+                
+                # 尝试从 TLS 配置中提取域名，如果提取不到则使用 IP
+                local SNI=$(echo "$CONF" | jq -r '.tls.server_name // ""')
+                local HOST=${SNI:-$IP}
+
                 case $TYPE in
                     vless)
                         local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
-                        local SNI=$(echo "$CONF" | jq -r '.tls.server_name')
                         local SID=$(echo "$CONF" | jq -r '.tls.reality.short_id[0] // ""')
                         if [[ -n "$SID" ]]; then
-                            echo -e "${RED}Reality 节点的公钥不存储在配置文件中，无法生成完整链接。${PLAIN}"
+                            echo -e "${RED}Reality 节点的公钥不存储在配置文件中，无法生成完整链接，请查阅初始安装记录。${PLAIN}"
                         else
                             local WSPATH=$(echo "$CONF" | jq -r '.transport.path // ""')
-                            echo -e "${BLUE}vless://$UUID@$IP:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#$TAG${PLAIN}"
+                            echo -e "${BLUE}vless://$UUID@$HOST:$PORT?encryption=none&security=tls&type=ws&host=$SNI&path=$WSPATH#$TAG${PLAIN}"
                         fi
                         ;;
                     tuic)
                         local UUID=$(echo "$CONF" | jq -r '.users[0].uuid')
                         local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                        echo -e "${BLUE}tuic://$UUID:$PASS@$IP:$PORT?congestion_control=bbr#$TAG${PLAIN}"
+                        echo -e "${BLUE}tuic://$UUID:$PASS@$HOST:$PORT?congestion_control=bbr&sni=$SNI&alpn=h3#$TAG${PLAIN}"
                         ;;
                     hysteria2)
                         local PASS=$(echo "$CONF" | jq -r '.users[0].password')
-                        echo -e "${BLUE}hysteria2://$PASS@$IP:$PORT#$TAG${PLAIN}"
+                        echo -e "${BLUE}hysteria2://$PASS@$HOST:$PORT?sni=$SNI#$TAG${PLAIN}"
                         ;;
                     shadowsocks)
                         local METHOD=$(echo "$CONF" | jq -r .method); local PASS=$(echo "$CONF" | jq -r .password)
                         local SS_BASE64=$(echo -n "$METHOD:$PASS" | base64 -w 0)
                         echo -e "${BLUE}ss://$SS_BASE64@$IP:$PORT#$TAG${PLAIN}"
+                        ;;
+                    http)
+                        # --- 新增 HTTPS 链接还原 ---
+                        local USER=$(echo "$CONF" | jq -r '.users[0].username // ""')
+                        local PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
+                        if [[ -n "$USER" ]]; then
+                            echo -e "${BLUE}https://$USER:$PASS@$HOST:$PORT#$TAG${PLAIN}"
+                        else
+                            echo -e "${BLUE}https://$HOST:$PORT#$TAG${PLAIN}"
+                        fi
+                        ;;
+                    trojan)
+                        # --- 新增 Trojan 链接还原 ---
+                        local PASS=$(echo "$CONF" | jq -r '.users[0].password // ""')
+                        local INSECURE=$(echo "$CONF" | jq -r '.tls.insecure // false')
+                        local INS_VAL="0"; [[ "$INSECURE" == "true" ]] && INS_VAL="1"
+                        echo -e "${BLUE}trojan://$PASS@$HOST:$PORT?security=tls&sni=$SNI&allowInsecure=$INS_VAL#$TAG${PLAIN}"
+                        ;;
+                    *)
+                        echo -e "${RED}暂不支持该协议 ($TYPE) 的链接还原${PLAIN}"
                         ;;
                 esac
             fi
