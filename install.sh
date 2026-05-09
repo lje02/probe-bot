@@ -1177,39 +1177,61 @@ toggle_warp() {
     clear
     echo -e "${YELLOW}--- WARP 全局开关管理 ---${PLAIN}"
 
-    # ---------- 前置检查 ----------
+    # ---------- 1. 环境检查 ----------
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo -e "${RED}配置文件 $CONFIG_FILE 不存在！${PLAIN}"
         return 1
     fi
 
-    # ---------- 1. 检查 warp-out 出站是否存在 ----------
+    if ! jq empty "$CONFIG_FILE" 2>/dev/null; then
+        echo -e "${RED}配置文件 JSON 格式错误，请检查 $CONFIG_FILE${PLAIN}"
+        return 1
+    fi
+
+    # 判断写权限，决定是否使用 sudo 写回（临时文件在 /tmp 不需要 sudo）
+    local SUDO=""
+    if [[ ! -w "$CONFIG_FILE" ]]; then
+        if command -v sudo &>/dev/null && sudo -n true 2>/dev/null; then
+            SUDO="sudo"
+        else
+            echo -e "${RED}没有写入 $CONFIG_FILE 的权限，请使用 root 或配置 sudo${PLAIN}"
+            return 1
+        fi
+    fi
+
+    # ---------- 2. 检查 warp-out 出站 ----------
     local has_warp
     has_warp=$(jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" 2>/dev/null)
     if [[ -z "$has_warp" ]]; then
         echo -e "${YELLOW}未检测到 WARP 配置，正在初始化申请...${PLAIN}"
-        # 调用注册并添加出站的函数（必须成功）
         if ! add_warp_outbound; then
             echo -e "${RED}初始化 WARP 失败，退出。${PLAIN}"
             return 1
         fi
     fi
 
-    # ---------- 2. 读取当前默认出站标签 ----------
+    # ---------- 3. 读取当前默认出站 ----------
     local current_final
-    current_final=$(jq -r '.route.final // "direct"' "$CONFIG_FILE")   # 没有 final 字段时默认为 direct
+    current_final=$(jq -r '.route.final // "direct"' "$CONFIG_FILE")
 
-    # ---------- 3. 交互开关 ----------
+    # ---------- 4. 交互开关 ----------
     if [[ "$current_final" == "warp-out" ]]; then
         echo -e "当前状态: ${GREEN}已开启 (全局走 WARP)${PLAIN}"
         read -p "是否关闭 WARP 全局代理？(y/n): " choice
         if [[ "$choice" == "y" ]]; then
-            # 修改 final 为 direct，并替换原配置文件
-            jq '.route.final = "direct"' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            if save_and_restart; then
-                echo -e "${GREEN}✔ WARP 已关闭，流量现在直连 (direct)。${PLAIN}"
+            # 备份
+            $SUDO cp "$CONFIG_FILE" "${CONFIG_FILE}.bak.$(date +%s)"
+            local tmp_cfg="/tmp/sing-box-tmp-$$.json"
+            # 生成新配置到临时文件
+            if jq '.route.final = "direct"' "$CONFIG_FILE" > "$tmp_cfg"; then
+                if save_and_restart "$tmp_cfg"; then
+                    echo -e "${GREEN}✔ WARP 已关闭，流量直连 (direct)。${PLAIN}"
+                else
+                    echo -e "${RED}✘ 重启或配置检查失败，备份已保留。${PLAIN}"
+                fi
             else
-                echo -e "${RED}✘ 配置写入或重启失败，请检查 ${CONFIG_FILE}${PLAIN}"
+                echo -e "${RED}✘ 生成新配置失败。${PLAIN}"
+                rm -f "$tmp_cfg"
             fi
         fi
     else
@@ -1217,21 +1239,25 @@ toggle_warp() {
         echo -e "${CYAN}注：开启后，所有节点流量都将通过 WARP 落地出口。${PLAIN}"
         read -p "是否开启 WARP 全局代理？(y/n): " choice
         if [[ "$choice" == "y" ]]; then
-            jq '.route.final = "warp-out"' "$CONFIG_FILE" > tmp.json && mv tmp.json "$CONFIG_FILE"
-            if save_and_restart; then
-                echo -e "${GREEN}✔ WARP 已开启，所有流量已重定向至 warp-out。${PLAIN}"
+            $SUDO cp "$CONFIG_FILE" "${CONFIG_FILE}.bak.$(date +%s)"
+            local tmp_cfg="/tmp/sing-box-tmp-$$.json"
+            if jq '.route.final = "warp-out"' "$CONFIG_FILE" > "$tmp_cfg"; then
+                if save_and_restart "$tmp_cfg"; then
+                    echo -e "${GREEN}✔ WARP 已开启，所有流量重定向至 warp-out。${PLAIN}"
+                else
+                    echo -e "${RED}✘ 重启或配置检查失败，备份已保留。${PLAIN}"
+                fi
             else
-                echo -e "${RED}✘ 配置写入或重启失败，请检查 ${CONFIG_FILE}${PLAIN}"
+                echo -e "${RED}✘ 生成新配置失败。${PLAIN}"
+                rm -f "$tmp_cfg"
             fi
         fi
     fi
 
-    # 如果脚本里有 pause 函数则保留，否则可注释掉
     pause 2>/dev/null || read -p "按回车键继续..."
 }
 
 update_all() {
-    auto_backup
     echo -e "${CYAN}请选择更新项:${PLAIN}"
     echo "1. 更新管理脚本 | 2. 更新 sing-box 内核 | 0. 返回"
     read -p "选择: " uc
