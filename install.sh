@@ -1013,6 +1013,7 @@ add_outbound() {
 }
 
 update_all() {
+    auto_backup
     echo -e "${CYAN}请选择更新项:${PLAIN}"
     echo "1. 更新管理脚本 | 2. 更新 sing-box 内核 | 0. 返回"
     read -p "选择: " uc
@@ -1067,9 +1068,6 @@ while true; do
     echo "9. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
     echo "11 更改配置/删除"
-    echo "12 WARP注册"
-    echo "13 一键开关WARP"
-    echo "14 配置WARP出站"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -1087,9 +1085,6 @@ while true; do
         9) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
-        12) register_warp_account ;;
-        13) toggle_warp ;;
-        14) add_warp_outbound ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
