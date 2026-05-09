@@ -1171,7 +1171,7 @@ while true; do
         9) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
-        12) add_warp_outbound ;;
+        12) register_warp_account ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
