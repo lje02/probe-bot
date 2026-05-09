@@ -1153,7 +1153,7 @@ add_warp_outbound() {
         }]' "$SINGBOX_CONFIG" > tmp.json && mv tmp.json "$SINGBOX_CONFIG"
 
     # 重启 sing-box（假设你有这个函数）
-    if restart_singbox; then
+    if systemctl restart sing-box; then
         echo -e "${GREEN}✔ sing-box WARP 出站配置完成！${PLAIN}"
     else
         echo -e "${RED}✘ 写入或重启失败${PLAIN}"
