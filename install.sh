@@ -1107,16 +1107,17 @@ add_outbound() {
         pause
     done
 }
+
 add_warp_outbound() {
-    if ! Register_warp_account; then
-        echo -e "${RED}WARP 注册失败，取消添加。${PLAIN}"
+    # 确保变量不为空
+    if [[ -z "$W_V4" || -z "$W_RES_JSON" ]]; then
+        echo -e "${RED}✘ 错误：未检测到有效的 WARP 账户数据，请重新运行注册函数${PLAIN}"
         return 1
     fi
 
-    
-    echo -e "${YELLOW}正在将 WARP 出站配置写入 sing-box...${PLAIN}"
-    
-    # 使用 --argjson 确保 reserved 被识别为数组类型而非字符串
+    echo -e "${YELLOW}正在配置 WARP 出站 (warp-out)...${PLAIN}"
+
+    # 使用 jq 安全注入，注意 --argjson 处理 reserved 数组
     jq --arg priv "$W_PRIV" \
        --arg v4 "$W_V4" \
        --arg v6 "$W_V6" \
@@ -1134,16 +1135,11 @@ add_warp_outbound() {
             "udp_fragment": true
         }]' "$CONFIG_FILE" > tmp.json
 
-    if [[ $? -ne 0 ]]; then
-        echo -e "${RED}✘ JSON 构造失败，请检查 jq 逻辑${PLAIN}"
-        rm -f tmp.json
-        return 1
-    fi
-
+    # 替换并重启
     if save_and_restart; then
-        echo -e "${GREEN}✔ WARP 出站已添加成功！标签为: warp-out${PLAIN}"
+        echo -e "${GREEN}✔ WARP 出站配置成功！${PLAIN}"
     else
-        echo -e "${RED}✘ sing-box 启动失败，请检查配置文件格式${PLAIN}"
+        echo -e "${RED}✘ 写入失败，请检查配置文件格式${PLAIN}"
     fi
 }
 
@@ -1243,7 +1239,9 @@ while true; do
     echo "9. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
     echo "11 更改配置/删除"
-    echo "12 WARP"
+    echo "12 WARP注册"
+    echo "13 一键开关WARP"
+    echo "14 配置WARP出站"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -1263,6 +1261,7 @@ while true; do
         11) edit_node ;;
         12) register_warp_account ;;
         13) toggle_warp ;;
+        14) add_warp_outbound ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
