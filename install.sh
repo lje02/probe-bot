@@ -67,32 +67,59 @@ show_status() {
 
 # --- 功能模块 ---
 
-apply_cert() {
-    echo -e "${YELLOW}--- ACME 域名证书申请 ---${PLAIN}"
-    read -p "请输入解析到本机的域名: " domain
-    [[ -z "$domain" ]] && echo -e "${RED}域名不能为空${PLAIN}" && pause && return
+# 
+CERT_DIR="/etc/sing-box/cert"
+BACKUP_DIR="/etc/sing-box/backup"
 
+apply_cert() {
+    echo -e "${YELLOW}--- ACME 域名证书申请 (增强版) ---${PLAIN}"
+    
+    # 1. 基础检查
+    [[ -z "$domain" ]] && read -p "请输入解析到本机的域名: " domain
+    [[ -z "$domain" ]] && echo -e "${RED}域名不能为空${PLAIN}" && return
+
+    # 2. 端口冲突预处理
+    local web_services=("nginx" "apache2" "httpd")
+    local stopped_services=()
+    
+    echo -e "${CYAN}正在检查端口占用...${PLAIN}"
+    systemctl stop sing-box 2>/dev/null
+    
+    for svc in "${web_services[@]}"; do
+        if systemctl is-active --quiet "$svc"; then
+            systemctl stop "$svc"
+            stopped_services+=("$svc")
+        fi
+    done
+
+    # 3. 安装依赖与 acme.sh
     apt update && apt install -y socat cron uuid-runtime
-    if [ ! -f ~/.acme.sh/acme.sh ]; then
+    local ACME_BIN="$HOME/.acme.sh/acme.sh"
+    
+    if [ ! -f "$ACME_BIN" ]; then
         curl https://get.acme.sh | sh -s email=admin@$domain
-        source ~/.bashrc
     fi
 
+    # 4. 申请证书 (强制使用绝对路径)
     echo -e "${YELLOW}正在尝试申请证书...${PLAIN}"
-    systemctl stop sing-box 2>/dev/null
-    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --server letsencrypt
+    "$ACME_BIN" --issue -d "$domain" --standalone --server letsencrypt --force
     
     if [ $? -eq 0 ]; then
         local target_dir="$CERT_DIR/$domain"
         mkdir -p "$target_dir"
-        ~/.acme.sh/acme.sh --install-cert -d "$domain" \
+        "$ACME_BIN" --install-cert -d "$domain" \
             --key-file "$target_dir/server.key" \
             --fullchain-file "$target_dir/server.crt"
         echo -e "${GREEN}✔ 证书安装成功！路径: $target_dir${PLAIN}"
     else
-        echo -e "${RED}✘ 申请失败，请确认 80 端口未被占用且域名解析正确。${PLAIN}"
+        echo -e "${RED}✘ 申请失败！请检查: 1.域名解析是否生效 2.防火墙是否放行 80 端口${PLAIN}"
     fi
+
+    # 5. 恢复环境 (原路启动)
     systemctl start sing-box 2>/dev/null
+    for svc in "${stopped_services[@]}"; do
+        systemctl start "$svc" 2>/dev/null
+    done
     pause
 }
 
