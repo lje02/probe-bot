@@ -1058,8 +1058,8 @@ while true; do
     show_status
     echo "--------------------------------"
     echo "1. 安装 / 重装 sing-box"
-    echo "2. 节点配置 (VLESS/TUIC/Hy2/SS/Socks/WS_CF)"
-    echo "3. 节点管理 (查看/修改端口/删除)"
+    echo "2. 节点快速配置"
+    echo "3. 配置/链接查看"
     echo "4. 链路管理（中转/落地/链式)"
     echo "5. 分流设置/管理"
     echo "6. 更新脚本或内核"
@@ -1067,6 +1067,7 @@ while true; do
     echo "8. 开启 BBR 网络加速"
     echo "9. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
+    echo "11 更改配置/删除
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -1077,12 +1078,13 @@ while true; do
         2) add_node ;;
         3) manage_configs ;;
         4) chain_proxy;;
-        5) manage_routing;;
+        5) manage_routing ;;
         6) update_all ;;
         7) backup_restore ;;
         8) enable_bbr ;;
         9) apply_cert ;;
-        10) add_outbound;;
+        10) add_outbound ;;
+        11) edit_node ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
