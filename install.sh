@@ -231,6 +231,8 @@ add_node() {
     echo "4. Shadowsocks (2022-blake3)"
     echo "5. VLESS + WS + CF"
     echo "6. Socks5"
+    echo "7. HTTPS (HTTP over TLS)"
+    echo "8. Trojan"
     echo "0. 返回"
     read -p "请选择: " choice
 
@@ -334,6 +336,54 @@ add_node() {
                '.inbounds += [{"type":"socks","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"username":$user,"password":$pass}]}]' "$CONFIG_FILE" > tmp.json
             if save_and_restart; then
                 LINK="socks5://$USER:$PASS@$IP:$PORT#$TAG"
+            fi
+            ;;
+        7)
+            # --- 新增: HTTPS (HTTP Proxy over TLS) ---
+            read -p "端口: " PORT; read -p "用户名: " USER; read -p "密码: " PASS; TAG="https${PORT}"
+            echo -e "1. 自签名证书 | 2. ACME 真证书"
+            read -p "选择: " cert_type
+            if [[ "$cert_type" == "2" ]]; then
+                read -p "真证书对应的域名: " domain
+                CERT_PATH="$CERT_DIR/$domain/server.crt"; KEY_PATH="$CERT_DIR/$domain/server.key"
+                [[ ! -f "$CERT_PATH" ]] && echo -e "${RED}错误: 未检测到证书，请先申请${PLAIN}" && pause && return
+                HOST_ADDR="$domain"
+            else
+                CERT_PATH="/etc/sing-box/https.crt"; KEY_PATH="/etc/sing-box/https.key"
+                openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=bing.com" -days 3650 2>/dev/null
+                HOST_ADDR="$IP"
+            fi
+            
+            jq --arg port "$PORT" --arg user "$USER" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" --arg tag "$TAG" \
+               '.inbounds += [{"type":"http","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"username":$user,"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key}}]' "$CONFIG_FILE" > tmp.json
+            
+            if save_and_restart; then
+                # HTTPS 代理的标准 URI 格式
+                LINK="https://$USER:$PASS@$HOST_ADDR:$PORT#$TAG"
+            fi
+            ;;
+        8)
+            # --- 新增: Trojan ---
+            read -p "端口: " PORT; read -p "密码: " PASS; TAG="trojan${PORT}"
+            echo -e "1. 自签名证书 | 2. ACME 真证书"
+            read -p "选择: " cert_type
+            if [[ "$cert_type" == "2" ]]; then
+                read -p "真证书对应的域名: " domain
+                CERT_PATH="$CERT_DIR/$domain/server.crt"; KEY_PATH="$CERT_DIR/$domain/server.key"
+                [[ ! -f "$CERT_PATH" ]] && echo -e "${RED}错误: 未检测到证书，请先申请${PLAIN}" && pause && return
+                SNI_NAME="$domain"; IS_INSECURE="0"; HOST_ADDR="$domain"
+            else
+                CERT_PATH="/etc/sing-box/trojan.crt"; KEY_PATH="/etc/sing-box/trojan.key"
+                openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=amazon.com" -days 3650 2>/dev/null
+                SNI_NAME="amazon.com"; IS_INSECURE="1"; HOST_ADDR="$IP"
+            fi
+            
+            jq --arg port "$PORT" --arg pass "$PASS" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" --arg tag "$TAG" \
+               '.inbounds += [{"type":"trojan","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"password":$pass}],"tls":{"enabled":true,"certificate_path":$cert,"key_path":$key}}]' "$CONFIG_FILE" > tmp.json
+            
+            if save_and_restart; then
+                # Trojan 的标准 URI 格式，附带 sni 和不安全校验参数
+                LINK="trojan://$PASS@$HOST_ADDR:$PORT?security=tls&sni=$SNI_NAME&allowInsecure=$IS_INSECURE#$TAG"
             fi
             ;;
     esac
