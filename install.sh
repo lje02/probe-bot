@@ -211,50 +211,77 @@ backup_restore() {
     pause
 }
 
-install_base() {
-    echo -e "${GREEN}>>> 正在安装依赖并检测架构...${PLAIN}"
-    apt update -y && apt install -y curl jq openssl tar util-linux wget uuid-runtime
+install_singbox() {
+    local ARCH=$(uname -m)
+    local TARNAME
 
-    local arch=""
-    case "$(uname -m)" in
-        x86_64) arch="amd64" ;;
-        aarch64) arch="arm64" ;;
-        armv7l) arch="armv7" ;;
-        *) echo -e "${RED}不支持的架构: $(uname -m)${PLAIN}"; pause; return ;;
+    # 架构转换
+    case "$ARCH" in
+        x86_64)  TARNAME="amd64" ;;
+        aarch64) TARNAME="arm64" ;;
+        armv7l)  TARNAME="armv7" ;;
+        *) echo -e "${RED}错误：不支持的架构 $ARCH${PLAIN}"; return 1 ;;
     esac
 
-    TAG=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r .tag_name)
-    echo -e "${CYAN}检测到架构: $arch, 正在下载版本: $TAG...${PLAIN}"
-    
-    local url="https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${arch}.tar.gz"
-    wget -O sing-box.tar.gz "$url"
-    tar -xzf sing-box.tar.gz
-    mv sing-box-*/sing-box /usr/local/bin/sing-box
+    # 安装必要工具
+    if ! command -v tar &>/dev/null || ! command -v wget &>/dev/null; then
+        echo -e "${CYAN}安装 wget / tar ...${PLAIN}"
+        apt update && apt install -y wget tar || {
+            echo -e "${RED}依赖安装失败，请手动安装 wget 和 tar${PLAIN}"
+            return 1
+        }
+    fi
+
+    # 获取最新版本号（利用 GitHub API）
+    echo -e "${CYAN}正在获取 sing-box 最新版本...${PLAIN}"
+    local LATEST_VERSION=$(wget -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+        | grep -oP '"tag_name":\s*"\K[^"]+')
+    if [[ -z "$LATEST_VERSION" ]]; then
+        echo -e "${RED}无法获取最新版本号，请检查网络或 GitHub API 限制${PLAIN}"
+        return 1
+    fi
+    # 去除可能的 'v' 前缀，统一格式
+    local VERSION_NO_V="${LATEST_VERSION#v}"
+
+    # 构造下载链接
+    local DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_VERSION}/sing-box-${VERSION_NO_V}-linux-${TARNAME}.tar.gz"
+    echo -e "${CYAN}下载地址：$DOWNLOAD_URL${PLAIN}"
+
+    # 下载
+    local TMP_DIR=$(mktemp -d)
+    wget -q --show-progress -O "$TMP_DIR/sing-box.tar.gz" "$DOWNLOAD_URL" || {
+        echo -e "${RED}下载失败！请检查版本 ${LATEST_VERSION} 是否存在${PLAIN}"
+        rm -rf "$TMP_DIR"
+        return 1
+    }
+
+    # 解压
+    tar -xzf "$TMP_DIR/sing-box.tar.gz" -C "$TMP_DIR" || {
+        echo -e "${RED}解压失败！${PLAIN}"
+        rm -rf "$TMP_DIR"
+        return 1
+    }
+
+    # 查找解压出的 sing-box 可执行文件
+    local BIN=$(find "$TMP_DIR" -type f -name "sing-box" -executable | head -1)
+    if [[ -z "$BIN" ]]; then
+        # 如果 sing-box 文件名被版本号包裹，再尝试匹配目录
+        BIN=$(find "$TMP_DIR/sing-box-${VERSION_NO_V}-linux-${TARNAME}" -type f -name "sing-box" 2>/dev/null | head -1)
+    fi
+    if [[ -z "$BIN" ]]; then
+        echo -e "${RED}找不到 sing-box 可执行文件${PLAIN}"
+        rm -rf "$TMP_DIR"
+        return 1
+    fi
+
+    # 安装到 /usr/local/bin（避免覆盖自身）
+    cp "$BIN" /usr/local/bin/sing-box
     chmod +x /usr/local/bin/sing-box
-    rm -rf sing-box*
 
-    cat > /etc/systemd/system/sing-box.service <<EOF
-[Unit]
-Description=sing-box service
-After=network.target nss-lookup.target
+    # 清理
+    rm -rf "$TMP_DIR"
 
-[Service]
-ExecStart=/usr/local/bin/sing-box run -c $CONFIG_FILE
-Restart=on-failure
-RestartSec=10s
-LimitNOFILE=infinity
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
-    systemctl enable sing-box
-    init_config
-    cp "$0" /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb
-    systemctl start sing-box
-    echo -e "${GREEN}安装完成！请输入 ssb 管理。${PLAIN}"
-    pause
+    echo -e "${GREEN}sing-box ${LATEST_VERSION} 安装成功！${PLAIN}"
 }
 
 add_node() {
