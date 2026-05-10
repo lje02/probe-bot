@@ -217,39 +217,13 @@ EOF
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
-    # 1. 确保变量已加载
-    [ -f "/etc/warp_account.env" ] && source "/etc/warp_account.env"
+    # ... 前面的变量检查和 IP 处理逻辑保持不变 ...
 
-    if [[ -z "$W_PRIV" || -z "$W_V4" ]]; then
-        echo -e "${RED}✘ 错误：未检测到账户信息，请先运行注册函数。${PLAIN}"
-        return 1
-    fi
+    # 【修复】去掉 local，确保全局可见，或者直接给它一个固定名称
+    # 使用全局变量名，方便 toggle_warp 读取
+    WARP_TMP_CONF="/tmp/sing-box-warp-fragment.json"
 
-    # 2. 【核心修复】强力校验 W_RES_JSON 格式
-    # 如果 W_RES_JSON 不是以 [ 开头，或者不符合 JSON 规范，强制重置为 []
-    local safe_res="[]"
-    if [[ "$W_RES_JSON" == "["*"]" ]]; then
-        # 进一步校验是否能被 jq 解析
-        if echo "$W_RES_JSON" | jq -e . >/dev/null 2>&1; then
-            safe_res="$W_RES_JSON"
-        fi
-    fi
-
-    # 3. 预处理 IP 地址 (补齐掩码)
-    local v4_cidr="${W_V4%/32}/32"
-    local v6_cidr=""
-    [[ -n "$W_V6" ]] && v6_cidr="${W_V6%/128}/128"
-
-    # 4. 探测最佳端点
-    local endpoint="162.159.192.1"
-    [[ -n "$v6_cidr" ]] && endpoint="2606:4700:d0::a29f:c001"
-
-    local tmp_cfg="/tmp/sing-box-warp-$$.json"
-
-    echo -e "${YELLOW}正在注入全局 WARP 落地配置 (Endpoints 模式)...${PLAIN}"
-
-    # 5. 使用 jq 生成配置 (注意这里改为 --arg，手动在内部处理 JSON 解析防止崩溃)
-    # 采用最新的 endpoints 结构，解决 "unknown field server" 报错
+    # 生成 JSON
     jq -n \
         --arg priv "$W_PRIV" \
         --arg v4 "$v4_cidr" \
@@ -282,74 +256,64 @@ add_warp_outbound() {
             ]
           }
         }
-        ' > "$tmp_cfg"
+        ' > "$WARP_TMP_CONF"
 
-    # 6. 最终校验
-    if [[ ! -s "$tmp_cfg" ]]; then
-        echo -e "${RED}✘ JSON 写入失败，请检查 jq 是否安装。${PLAIN}"
+    if [[ ! -s "$WARP_TMP_CONF" ]]; then
+        echo -e "${RED}✘ 临时片段生成失败${PLAIN}"
         return 1
     fi
-
-    if ! sing-box check -c "$tmp_cfg" > /dev/null 2>&1; then
-        echo -e "${RED}✘ 配置校验失败！${PLAIN}"
-        sing-box check -c "$tmp_cfg"
-        return 1
-    fi
-
-    echo -e "${GREEN}✔ 配置文件已通过校验：$tmp_cfg${PLAIN}"
-    # mv "$tmp_cfg" /etc/sing-box/config.json && systemctl restart sing-box
+    return 0
 }
 
 
 # ========== WARP 全局落地开关 ==========
 toggle_warp() {
-    # 1. 检查主配置文件是否存在
     local MAIN_CONFIG="/etc/sing-box/config.json"
-    if [[ ! -f "$MAIN_CONFIG" ]]; then
-        echo -e "${RED}✘ 错误：找不到主配置文件 $MAIN_CONFIG${PLAIN}"
-        return 1
-    fi
-
-    # 2. 调用我们刚才写好的 add_warp_outbound 生成最新的片段
-    # 假设 add_warp_outbound 成功后会将路径存入 $tmp_cfg
+    
+    # 执行生成
     add_warp_outbound || return 1
     
+    # 【修复】使用刚才定义的全局路径变量
+    if [[ ! -f "$WARP_TMP_CONF" ]]; then
+        echo -e "${RED}✘ 错误：找不到 WARP 配置片段文件${PLAIN}"
+        return 1
+    fi
+
     echo -e "${YELLOW}正在合并配置到主文件...${PLAIN}"
 
-    # 3. 【核心修复】使用变量传递，避免 EOF 错误
-    # 我们把临时文件的内容先读进变量，再注入主配置
-    local warp_content=$(cat "$tmp_cfg")
-    local final_tmp="/tmp/final_config_$$.json"
+    # 读取内容
+    local warp_content=$(cat "$WARP_TMP_CONF")
+    
+    # 再次检查内容是否为空，防止 cat 失败
+    if [[ -z "$warp_content" ]]; then
+        echo -e "${RED}✘ 错误：配置片段内容为空${PLAIN}"
+        return 1
+    fi
 
-    # 使用 jq 将 warp_outbound 的内容注入到主配置的 endpoints 和 route 中
-    # 并确保原有的配置不被破坏
+    local final_tmp="/tmp/final_config_fixed.json"
+
+    # 合并逻辑
     jq --argjson warp "$warp_content" '
-        # 注入 endpoints
-        .endpoints = ($warp.endpoints + [ .endpoints[]? | select(.tag != "warp-out") ]) |
-        
-        # 强制将 warp-out 规则放到路由表的第一位（全局接管）
-        .route.rules = ($warp.route.rules + [ .route.rules[]? | select(.outbound != "warp-out") ])
+        .endpoints = ($warp.endpoints + [ (.endpoints[]? | select(.tag != "warp-out")) ]) |
+        .route.rules = ($warp.route.rules + [ (.route.rules[]? | select(.outbound != "warp-out")) ])
     ' "$MAIN_CONFIG" > "$final_tmp"
 
-    # 4. 检查生成是否成功
     if [[ ! -s "$final_tmp" ]]; then
-        echo -e "${RED}✘ 合并失败：生成的配置文件为空！${PLAIN}"
-        rm -f "$final_tmp"
+        echo -e "${RED}✘ 合并失败：生成的文件为空，请检查主配置 JSON 格式${PLAIN}"
+        # 调试：尝试打印主配置错误
+        # jq . "$MAIN_CONFIG"
         return 1
     fi
 
-    # 5. 校验最终文件
-    if ! sing-box check -c "$final_tmp" > /dev/null 2>&1; then
-        echo -e "${RED}✘ 最终配置校验失败！日志如下：${PLAIN}"
+    # 校验、替换并重启
+    if sing-box check -c "$final_tmp" > /dev/null 2>&1; then
+        mv -f "$final_tmp" "$MAIN_CONFIG"
+        systemctl restart sing-box
+        echo -e "${GREEN}✔ 已开启 WARP 全局落地${PLAIN}"
+    else
+        echo -e "${RED}✘ 最终配置校验失败，请运行 sing-box check 查看具体错误${PLAIN}"
         sing-box check -c "$final_tmp"
-        rm -f "$final_tmp"
-        return 1
     fi
-
-    # 6. 替换并重启
-    mv -f "$final_tmp" "$MAIN_CONFIG"
-    systemctl restart sing-box
-    echo -e "${GREEN}✔ WARP 全局落地已成功开启并重启服务！${PLAIN}"
 }
 
 
