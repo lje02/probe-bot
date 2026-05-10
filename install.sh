@@ -11,6 +11,7 @@ CYAN='\033[1;36m'
 BLUE='\033[1;34m'
 PLAIN='\033[0m'
 
+WARP_ENV_FILE="/etc/warp_account.env"
 CONFIG_FILE="/etc/sing-box/config.json"
 LINK_DIR="/etc/sing-box/links"
 CERT_DIR="/etc/sing-box/certs"
@@ -144,8 +145,6 @@ auto_backup() {
     rm -rf "/tmp/sb_auto_bak"
     echo -e "${YELLOW}[自动快照] 更新前已备份至: $B_NAME${PLAIN}"
 }
-# 定义一个存储配置的固定路径
-WARP_ENV_FILE="/etc/warp_account.env"
 
 register_warp_account() {
     # 0. 检查是否已经有缓存的配置，如果有直接加载，跳过注册
