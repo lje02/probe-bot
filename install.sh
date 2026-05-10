@@ -1044,7 +1044,6 @@ add_outbound() {
 }
 
 update_all() {
-    auto_backup
     echo -e "${CYAN}请选择更新项:${PLAIN}"
     echo "1. 更新管理脚本 | 2. 更新 sing-box 内核 | 0. 返回"
     read -p "选择: " uc
