@@ -211,77 +211,69 @@ backup_restore() {
     pause
 }
 
-install_singbox() {
-    local ARCH=$(uname -m)
-    local TARNAME
+install_base() {
+    echo -e "${CYAN}▶ 开始安装/重装基础组件...${PLAIN}"
 
-    # 架构转换
-    case "$ARCH" in
-        x86_64)  TARNAME="amd64" ;;
-        aarch64) TARNAME="arm64" ;;
-        armv7l)  TARNAME="armv7" ;;
-        *) echo -e "${RED}错误：不支持的架构 $ARCH${PLAIN}"; return 1 ;;
+    # ---------- 安装系统依赖 ----------
+    if command -v apt &>/dev/null; then
+        apt update && apt install -y wget tar curl socat uuid-runtime cron
+    elif command -v yum &>/dev/null; then
+        yum install -y wget tar curl socat util-linux cronie
+    else
+        echo -e "${RED}不支持的包管理器，请手动安装依赖${PLAIN}"
+        return 1
+    fi
+
+    # ---------- 安装 ssb 脚本自身到 /usr/local/bin ----------
+    # 如果本次运行不是从 /usr/local/bin/ssb 执行的，则复制过去
+    if [[ "$0" != "/usr/local/bin/ssb" ]]; then
+        cp "$0" /usr/local/bin/ssb
+        chmod +x /usr/local/bin/ssb
+        echo -e "${GREEN}ssb 脚本已安装到 /usr/local/bin/ssb${PLAIN}"
+    fi
+
+    # ---------- 安装/更新 sing-box ----------
+    local ARCH
+    case "$(uname -m)" in
+        x86_64)  ARCH="amd64" ;;
+        aarch64) ARCH="arm64" ;;
+        armv7l)  ARCH="armv7" ;;
+        *) echo -e "${RED}错误：不支持的架构${PLAIN}"; return 1 ;;
     esac
 
-    # 安装必要工具
-    if ! command -v tar &>/dev/null || ! command -v wget &>/dev/null; then
-        echo -e "${CYAN}安装 wget / tar ...${PLAIN}"
-        apt update && apt install -y wget tar || {
-            echo -e "${RED}依赖安装失败，请手动安装 wget 和 tar${PLAIN}"
-            return 1
-        }
-    fi
-
-    # 获取最新版本号（利用 GitHub API）
-    echo -e "${CYAN}正在获取 sing-box 最新版本...${PLAIN}"
-    local LATEST_VERSION=$(wget -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest \
-        | grep -oP '"tag_name":\s*"\K[^"]+')
-    if [[ -z "$LATEST_VERSION" ]]; then
-        echo -e "${RED}无法获取最新版本号，请检查网络或 GitHub API 限制${PLAIN}"
+    echo -e "${CYAN}获取 sing-box 最新版本...${PLAIN}"
+    local LATEST
+    LATEST=$(wget -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
+    if [[ -z "$LATEST" ]]; then
+        echo -e "${RED}无法获取最新版本，请检查网络或 GitHub API 限制${PLAIN}"
         return 1
     fi
-    # 去除可能的 'v' 前缀，统一格式
-    local VERSION_NO_V="${LATEST_VERSION#v}"
+    local VNO="${LATEST#v}"
+    local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST}/sing-box-${VNO}-linux-${ARCH}.tar.gz"
+    echo -e "下载地址：$URL"
 
-    # 构造下载链接
-    local DOWNLOAD_URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST_VERSION}/sing-box-${VERSION_NO_V}-linux-${TARNAME}.tar.gz"
-    echo -e "${CYAN}下载地址：$DOWNLOAD_URL${PLAIN}"
+    local TMPD=$(mktemp -d)
+    wget -q --show-progress -O "$TMPD/sing-box.tar.gz" "$URL" || { rm -rf "$TMPD"; return 1; }
+    tar -xzf "$TMPD/sing-box.tar.gz" -C "$TMPD" || { rm -rf "$TMPD"; return 1; }
 
-    # 下载
-    local TMP_DIR=$(mktemp -d)
-    wget -q --show-progress -O "$TMP_DIR/sing-box.tar.gz" "$DOWNLOAD_URL" || {
-        echo -e "${RED}下载失败！请检查版本 ${LATEST_VERSION} 是否存在${PLAIN}"
-        rm -rf "$TMP_DIR"
-        return 1
-    }
-
-    # 解压
-    tar -xzf "$TMP_DIR/sing-box.tar.gz" -C "$TMP_DIR" || {
-        echo -e "${RED}解压失败！${PLAIN}"
-        rm -rf "$TMP_DIR"
-        return 1
-    }
-
-    # 查找解压出的 sing-box 可执行文件
-    local BIN=$(find "$TMP_DIR" -type f -name "sing-box" -executable | head -1)
+    local BIN=$(find "$TMPD" -type f -name "sing-box" -executable | head -1)
     if [[ -z "$BIN" ]]; then
-        # 如果 sing-box 文件名被版本号包裹，再尝试匹配目录
-        BIN=$(find "$TMP_DIR/sing-box-${VERSION_NO_V}-linux-${TARNAME}" -type f -name "sing-box" 2>/dev/null | head -1)
-    fi
-    if [[ -z "$BIN" ]]; then
-        echo -e "${RED}找不到 sing-box 可执行文件${PLAIN}"
-        rm -rf "$TMP_DIR"
+        echo -e "${RED}解压后未找到 sing-box 可执行文件${PLAIN}"
+        rm -rf "$TMPD"
         return 1
     fi
-
-    # 安装到 /usr/local/bin（避免覆盖自身）
     cp "$BIN" /usr/local/bin/sing-box
     chmod +x /usr/local/bin/sing-box
+    rm -rf "$TMPD"
 
-    # 清理
-    rm -rf "$TMP_DIR"
+    # ---------- 创建配置目录 ----------
+    mkdir -p /etc/sing-box
 
-    echo -e "${GREEN}sing-box ${LATEST_VERSION} 安装成功！${PLAIN}"
+    echo -e "${GREEN}✔ 基础组件安装完成！sing-box 版本：$LATEST${PLAIN}"
+    echo -e "ssb操作了。"
+
+    # 暂停等待
+    read -p "按回车键返回菜单..." dummy
 }
 
 add_node() {
