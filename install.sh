@@ -217,60 +217,87 @@ EOF
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
-    # 1. 确保变量不是空的（防止变量名写错或没读取到）
+    # 1. 确保变量已加载
+    [ -f "/etc/warp_account.env" ] && source "/etc/warp_account.env"
+
     if [[ -z "$W_PRIV" || -z "$W_V4" ]]; then
-        echo -e "${RED}错误：内存中未检测到 WARP 账户信息，请重新运行注册。${PLAIN}"
+        echo -e "${RED}✘ 错误：未检测到账户信息，请先运行注册函数。${PLAIN}"
         return 1
     fi
 
-    # 2. 预处理 W_RES_JSON：确保它是一个合法的 JSON 数组，如果为空则设为 []
-    local res_json="${W_RES_JSON:-[]}"
-    
-    # 3. 预处理 IP 地址：强制补齐掩码，防止 sing-box 报错 (no '/')
-    local v4_cidr="$W_V4"
-    [[ "$v4_cidr" != */* ]] && v4_cidr="${v4_cidr}/32"
-    local v6_cidr="$W_V6"
-    if [[ -n "$v6_cidr" ]]; then
-        [[ "$v6_cidr" != */* ]] && v6_cidr="${v6_cidr}/128"
+    # 2. 【核心修复】强力校验 W_RES_JSON 格式
+    # 如果 W_RES_JSON 不是以 [ 开头，或者不符合 JSON 规范，强制重置为 []
+    local safe_res="[]"
+    if [[ "$W_RES_JSON" == "["*"]" ]]; then
+        # 进一步校验是否能被 jq 解析
+        if echo "$W_RES_JSON" | jq -e . >/dev/null 2>&1; then
+            safe_res="$W_RES_JSON"
+        fi
     fi
 
-    # 生成临时文件名
-    local tmp_file="/tmp/sing-box-warp-$$.json"
+    # 3. 预处理 IP 地址 (补齐掩码)
+    local v4_cidr="${W_V4%/32}/32"
+    local v6_cidr=""
+    [[ -n "$W_V6" ]] && v6_cidr="${W_V6%/128}/128"
 
-    # 4. 【核心修复】使用 --argjson 处理数组，使用 --arg 处理字符串
-    # 这样可以避免手动拼接字符串导致的引号崩溃
+    # 4. 探测最佳端点
+    local endpoint="162.159.192.1"
+    [[ -n "$v6_cidr" ]] && endpoint="2606:4700:d0::a29f:c001"
+
+    local tmp_cfg="/tmp/sing-box-warp-$$.json"
+
+    echo -e "${YELLOW}正在注入全局 WARP 落地配置 (Endpoints 模式)...${PLAIN}"
+
+    # 5. 使用 jq 生成配置 (注意这里改为 --arg，手动在内部处理 JSON 解析防止崩溃)
+    # 采用最新的 endpoints 结构，解决 "unknown field server" 报错
     jq -n \
         --arg priv "$W_PRIV" \
         --arg v4 "$v4_cidr" \
         --arg v6 "$v6_cidr" \
-        --argjson reserved "$res_json" \
+        --arg res_raw "$safe_res" \
+        --arg endp "$endpoint" \
         '
         {
-          "type": "wireguard",
-          "tag": "warp-out",
-          "server": "engage.cloudflareclient.com",
-          "server_port": 2408,
-          "local_address": ([$v4, $v6] | map(select(. != ""))),
-          "private_key": $priv,
-          "reserved": $reserved,
-          "mtu": 1280,
-          "udp_fragment": true
+          "endpoints": [
+            {
+              "type": "wireguard",
+              "tag": "warp-out",
+              "address": ([$v4, $v6] | map(select(. != ""))),
+              "private_key": $priv,
+              "peers": [
+                {
+                  "address": $endp,
+                  "port": 2408,
+                  "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+                  "allowed_ips": ["0.0.0.0/0", "::/0"],
+                  "reserved": ($res_raw | fromjson)
+                }
+              ],
+              "mtu": 1280
+            }
+          ],
+          "route": {
+            "rules": [
+              { "outbound": "warp-out" }
+            ]
+          }
         }
-        ' > "$tmp_file"
+        ' > "$tmp_cfg"
 
-    # 5. 检查 jq 是否运行成功
-    if [[ $? -ne 0 || ! -s "$tmp_file" ]]; then
-        echo -e "${RED}✘ 配置文件生成失败！请检查系统是否安装了 jq。${PLAIN}"
-        # 打印变量内容辅助调试
-        echo "调试信息 -> W_V4: $W_V4, W_RES: $res_json"
+    # 6. 最终校验
+    if [[ ! -s "$tmp_cfg" ]]; then
+        echo -e "${RED}✘ JSON 写入失败，请检查 jq 是否安装。${PLAIN}"
         return 1
     fi
 
-    echo -e "${GREEN}✔ 临时配置文件已生成: $tmp_file${PLAIN}"
-    # 打印一下内容看看对不对（可选）
-    # cat "$tmp_file"
-    
-    # 后面接你的 sing-box 运行逻辑...
+    if ! sing-box check -c "$tmp_cfg" > /dev/null 2>&1; then
+        echo -e "${RED}✘ 配置校验失败！${PLAIN}"
+        sing-box check -c "$tmp_cfg"
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ 配置文件已通过校验：$tmp_cfg${PLAIN}"
+    # mv "$tmp_cfg" /etc/sing-box/config.json && systemctl restart sing-box
 }
 
 
