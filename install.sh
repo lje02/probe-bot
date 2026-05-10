@@ -136,28 +136,57 @@ apply_cert() {
 
 # --- 1. 先定义安装函数 ---
 install_warp_official() {
-    echo -e "${CYAN}正在安装 Cloudflare WARP 官方客户端...${PLAIN}"
+    echo -e "${CYAN}正在自动化部署 Cloudflare WARP 官方客户端...${PLAIN}"
 
-    # 自动识别并安装
+    # 1. 安装必要的系统依赖和官方仓库 (以 Debian/Ubuntu 为例，逻辑已精简)
     if [[ -f /etc/debian_version ]]; then
-        apt update && apt install -y curl gpg lsb-release
+        apt update && apt install -y curl gpg lsb-release jq ss-tulpn
         curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
         apt update && apt install -y cloudflare-warp
-    elif [[ -f /etc/redhat-release ]]; then
-        rpm -ivh https://pkg.cloudflareclient.com/cloudflare-release-el$(rpm -E %{rhel}).rpm
-        yum install cloudflare-warp -y
     fi
 
-    # 启动与配置
+    # 2. 【自动开机自启】并立即启动后台服务
+    echo -e "${YELLOW}正在配置服务自启...${PLAIN}"
     systemctl enable --now warp-svc
+
+    # 给服务一点启动时间
     sleep 2
+
+    # 3. 【自动注册】账户
+    # 使用 --accept-tos 自动接受协议，2>/dev/null 屏蔽“已注册”的报错
+    echo -e "${YELLOW}正在自动注册 WARP 账户...${PLAIN}"
     warp-cli registration new --accept-tos 2>/dev/null
+
+    # 4. 【自动配置模式】设置为 Proxy 模式并固定端口
+    echo -e "${YELLOW}正在优化代理配置...${PLAIN}"
     warp-cli mode proxy
-    warp-cli set-proxy-port 40000
+    # 兼容新旧版本命令，强制设置端口为 40000
+    warp-cli proxy set-port 40000 2>/dev/null || warp-cli set-proxy-port 40000 2>/dev/null
+
+    # 5. 【自动连接】
+    echo -e "${YELLOW}正在尝试建立隧道连接...${PLAIN}"
     warp-cli connect
-    
-    echo -e "${GREEN}✔ WARP 官方客户端安装并启动成功${PLAIN}"
+
+    # 6. 【自动验证】循环检查直到成功或超时
+    local retry=0
+    while true; do
+        if [[ $(warp-cli status) == *"Connected"* ]]; then
+            echo -e "${GREEN}✔ WARP 已自动连接成功！${PLAIN}"
+            break
+        fi
+        if [ $retry -gt 5 ]; then
+            echo -e "${RED}✘ 自动连接超时，请后续执行 warp-cli status 检查${PLAIN}"
+            break
+        fi
+        echo -e "${CYAN}等待连接中... ($((retry+1))/5)${PLAIN}"
+        sleep 3
+        ((retry++))
+    done
+
+    # 7. 打印落地 IP
+    local warp_ip=$(curl -s --proxy socks5h://127.0.0.1:40000 --max-time 5 https://ip.gs || echo "获取失败")
+    echo -e "${GREEN}当前 WARP 出口 IP: $warp_ip${PLAIN}"
 }
 
 # 注入 Sing-box 出站配置
