@@ -248,7 +248,7 @@ add_warp_outbound() {
     echo -e "${YELLOW}正在写入全局落地配置 (适配 Sing-box 1.13+ Endpoints 新规)...${PLAIN}"
 
     # 3. 核心注入逻辑：改用 endpoints
-    jq --arg priv "$W_PRIV" \
+    jq --arg priv "${W_PRIV:−none}" \
        --arg endp "$endpoint" \
        --argjson addr "$addr_json" \
        --argjson res "${W_RES_JSON:-[]}" \
