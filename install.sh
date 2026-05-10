@@ -67,94 +67,32 @@ show_status() {
 
 # --- 功能模块 ---
 
-# 
-CERT_DIR="/etc/sing-box/cert"
-BACKUP_DIR="/etc/sing-box/backup"
-
 apply_cert() {
-    echo -e "${YELLOW}--- ACME 域名证书申请 (增强版) ---${PLAIN}"
+    echo -e "${YELLOW}--- ACME 域名证书申请 ---${PLAIN}"
+    read -p "请输入解析到本机的域名: " domain
+    [[ -z "$domain" ]] && echo -e "${RED}域名不能为空${PLAIN}" && pause && return
 
-    # --- 全局变量保护 ---
-    CERT_DIR="${CERT_DIR:-/etc/ssl/certs}"   # 若外部未定义则使用默认路径
-
-    # 1. 基础检查
-    [[ -z "$domain" ]] && {
-        if [[ -t 0 ]]; then
-            read -p "请输入解析到本机的域名: " domain
-        else
-            echo -e "${RED}非交互式环境，请预先设置 \$domain 变量${PLAIN}"
-            return 1
-        fi
-    }
-    [[ -z "$domain" ]] && echo -e "${RED}域名不能为空${PLAIN}" && return
-
-    # 2. 端口冲突预处理（兼容 systemctl 不可用环境）
-    local web_services=("nginx" "apache2" "httpd")
-    local stopped_services=()
-
-    echo -e "${CYAN}正在检查端口占用...${PLAIN}"
-    if command -v systemctl &>/dev/null; then
-        systemctl stop sing-box 2>/dev/null
-
-        for svc in "${web_services[@]}"; do
-            if systemctl is-active --quiet "$svc" 2>/dev/null; then
-                systemctl stop "$svc"
-                stopped_services+=("$svc")
-            fi
-        done
-    fi
-
-    # 3. 安装依赖（检查是否已安装，避免重复更新）
-    if ! command -v socat &>/dev/null || ! command -v uuidgen &>/dev/null; then
-        echo -e "${CYAN}安装必要依赖...${PLAIN}"
-        if command -v apt &>/dev/null; then
-            apt update && apt install -y socat cron uuid-runtime || {
-                echo -e "${YELLOW}⚠ 依赖安装失败，可能影响证书申请${PLAIN}"
-            }
-        else
-            echo -e "${RED}未检测到 apt 包管理器，请手动安装 socat、uuid-runtime${PLAIN}"
-        fi
-    fi
-
-    # 3.1 安装/定位 acme.sh
-    local ACME_BIN="$HOME/.acme.sh/acme.sh"
-    # 确保使用绝对路径并处理 sudo 后 HOME 变化
-    [[ ! -f "$ACME_BIN" ]] && ACME_BIN=$(ls ~/.acme.sh/acme.sh 2>/dev/null || true)
-    if [[ ! -f "$ACME_BIN" ]]; then
-        echo -e "${CYAN}安装 acme.sh...${PLAIN}"
+    apt update && apt install -y socat cron uuid-runtime
+    if [ ! -f ~/.acme.sh/acme.sh ]; then
         curl https://get.acme.sh | sh -s email=admin@$domain
-        ACME_BIN="$HOME/.acme.sh/acme.sh"
-        [[ ! -f "$ACME_BIN" ]] && ACME_BIN=$(ls ~/.acme.sh/acme.sh 2>/dev/null)
+        source ~/.bashrc
     fi
 
-    if [[ ! -f "$ACME_BIN" ]]; then
-        echo -e "${RED}无法找到 acme.sh，请手动安装${PLAIN}"
-        return 1
-    fi
-
-    # 4. 申请证书
     echo -e "${YELLOW}正在尝试申请证书...${PLAIN}"
-    "$ACME_BIN" --issue -d "$domain" --standalone --server letsencrypt --force
-
-    if [[ $? -eq 0 ]]; then
+    systemctl stop sing-box 2>/dev/null
+    ~/.acme.sh/acme.sh --issue -d "$domain" --standalone --server letsencrypt
+    
+    if [ $? -eq 0 ]; then
         local target_dir="$CERT_DIR/$domain"
         mkdir -p "$target_dir"
-        "$ACME_BIN" --install-cert -d "$domain" \
+        ~/.acme.sh/acme.sh --install-cert -d "$domain" \
             --key-file "$target_dir/server.key" \
             --fullchain-file "$target_dir/server.crt"
         echo -e "${GREEN}✔ 证书安装成功！路径: $target_dir${PLAIN}"
     else
-        echo -e "${RED}✘ 申请失败！请检查: 1.域名解析是否生效 2.防火墙是否放行 80 端口${PLAIN}"
+        echo -e "${RED}✘ 申请失败，请确认 80 端口未被占用且域名解析正确。${PLAIN}"
     fi
-
-    # 5. 恢复环境（仅恢复之前被本脚本停止的服务）
-    if command -v systemctl &>/dev/null; then
-        systemctl start sing-box 2>/dev/null
-        for svc in "${stopped_services[@]}"; do
-            systemctl start "$svc" 2>/dev/null
-        done
-    fi
-
+    systemctl start sing-box 2>/dev/null
     pause
 }
 
