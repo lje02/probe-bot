@@ -98,6 +98,9 @@ show_status() {
     else
         echo -e "sing-box 状态: ${RED}[未运行/已停止]${PLAIN}"
     fi
+    warp_ip=$(curl -s --proxy socks5h://127.0.0.1:40000 --max-time 2 https://ip.gs || echo "未连接")
+    echo -e "WARP 落地 IP: ${CYAN}$warp_ip${PLAIN}"
+
 }
 
 # --- 功能模块 ---
