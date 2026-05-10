@@ -274,37 +274,48 @@ register_warp_account() {
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
+    # 加载账户（如果存在）
     [[ -f "/etc/warp_account.env" ]] && source "/etc/warp_account.env"
 
+    # 检查私钥
     if [[ -z "$W_PRIV" ]]; then
-        echo -e "${RED}✘ 缺少私钥，请先注册${PLAIN}"
+        echo -e "${RED}✘ 缺少 WARP 私钥，请先运行 register_warp_account${PLAIN}"
         return 1
     fi
+    # 检查至少一个 IP
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
-        echo -e "${RED}✘ 无 WARP IP${PLAIN}"
+        echo -e "${RED}✘ 未获取到 WARP IP 地址${PLAIN}"
         return 1
     fi
 
-    # 强制将 reserved 转为纯数字数组（去除任何引号嵌套）
+    # ----- 安全处理 reserved -----
     local safe_res
+    # 先将 W_RES_JSON 转为纯数组，无论它原来是什么格式
     safe_res=$(echo "$W_RES_JSON" | jq -c '
         if type == "array" then .
-        elif type == "string" then (fromjson? // [])
-        else [] end
-    ')
+        elif type == "string" then (try fromjson catch [])
+        else []
+        end' 2>/dev/null)
 
-    if [[ "$safe_res" == "[]" || -z "$safe_res" ]]; then
-        echo -e "${RED}✘ reserved 无效，请重新注册${PLAIN}"
+    # 严格校验：必须是非空数组且第一个元素是数字
+    if ! echo "$safe_res" | jq -e 'type == "array" and length == 3 and (.[0] | type == "number")' >/dev/null 2>&1; then
+        echo -e "${RED}✘ WARP reserved 字段无效，请重新注册账户或手动设置${PLAIN}"
+        echo -e "${YELLOW}当前 W_RES_JSON 值: $W_RES_JSON${PLAIN}"
+        echo -e "${YELLOW}尝试转换结果: $safe_res${PLAIN}"
         return 1
     fi
 
+    # 规范化 IP
     local v4_cidr="${W_V4%/32}/32"
     local v6_cidr=""; [[ -n "$W_V6" ]] && v6_cidr="${W_V6%/128}/128"
 
+    # 生成地址数组
     local addrs_json
     addrs_json=$(jq -n --arg v4 "$v4_cidr" --arg v6 "$v6_cidr" '[ $v4, $v6 ] | map(select(. != ""))')
 
     local frag="/tmp/sing-box-warp-fragment.json"
+
+    # 用 jq 生成片段，这里 safe_res 一定是合法的数组
     jq -n --arg priv "$W_PRIV" \
           --argjson addrs "$addrs_json" \
           --argjson res "$safe_res" \
@@ -327,14 +338,15 @@ add_warp_outbound() {
     }' > "$frag"
 
     if [[ -s "$frag" ]]; then
-        echo -e "${GREEN}✔ 片段生成成功${PLAIN}"
+        echo -e "${GREEN}✔ WARP 配置片段生成成功${PLAIN}"
         return 0
     else
-        echo -e "${RED}✘ 片段生成失败${PLAIN}"
+        echo -e "${RED}✘ 片段文件为空，生成失败${PLAIN}"
         return 1
     fi
 }
 
+# toggle 函数同步修复（使用绝对路径的临时文件并清理）
 toggle_warp() {
     local main="/etc/sing-box/config.json"
     local frag="/tmp/sing-box-warp-fragment.json"
@@ -361,9 +373,9 @@ toggle_warp() {
     if sing-box check -c "$merged" >/dev/null 2>&1; then
         cp "$merged" "$main"
         systemctl restart sing-box
-        echo -e "${GREEN}✔ 操作成功${PLAIN}"
+        echo -e "${GREEN}✔ 操作成功，sing-box 已重启${PLAIN}"
     else
-        echo -e "${RED}✘ 语法检查失败，详情如下：${PLAIN}"
+        echo -e "${RED}✘ 配置语法检查失败，旧配置已保留。错误详情：${PLAIN}"
         sing-box check -c "$merged"
     fi
     rm -f "$merged" "$frag"
