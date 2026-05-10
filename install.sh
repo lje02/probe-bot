@@ -147,7 +147,9 @@ auto_backup() {
 }
 
 register_warp_account() {
-    # 0. 检查是否已经有缓存的配置，如果有直接加载，跳过注册
+    # 0. 确保变量路径存在（如果外部没定义，给个默认值）
+    : "${WARP_ENV_FILE:=/etc/warp_account.env}"
+
     if [[ -f "$WARP_ENV_FILE" ]]; then
         source "$WARP_ENV_FILE"
         echo -e "${GREEN}✔ 已读取本地保存的 WARP 账户数据。${PLAIN}"
@@ -156,32 +158,30 @@ register_warp_account() {
 
     W_PRIV=""; W_V4=""; W_V6=""; W_RES_JSON=""
 
-    # 1. 依赖检查... (保持你原来的代码不变)
+    # 1. 依赖检查 (保持不变)
     local deps=("wireguard-tools" "jq" "curl" "bsdmainutils")
     local missing=()
     for dep in "${deps[@]}"; do
         if ! command -v "${dep%% *}" >/dev/null 2>&1; then missing+=("$dep"); fi
     done
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        apt update && apt install -y "${missing[@]}" >/dev/null 2>&1 || yum install -y "${missing[@]}"
-    fi
+    [[ ${#missing[@]} -gt 0 ]] && apt update && apt install -y "${missing[@]}" >/dev/null 2>&1
 
     # 2. 生成密钥
     local priv pub
-    priv=$(wg genkey)
+    priv=$(wg genkey) || return 1
     pub=$(echo "$priv" | wg pubkey)
 
     # 3. 申请账户
     echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
     local tos_date="2024-01-01T00:00:00.000Z"
-    if date -u +%FT%T.000Z >/dev/null 2>&1; then tos_date=$(date -u +%FT%T.000Z); fi
+    [[ $(date -u +%FT%T.000Z 2>/dev/null) ]] && tos_date=$(date -u +%FT%T.000Z)
 
     local api_endpoint="https://api.cloudflareclient.com/v0a2158/reg"
     local user_agent="okhttp/3.12.1"
     local response=$(curl -s --connect-timeout 10 -H "Content-Type: application/json" -H "User-Agent: $user_agent" -X POST "$api_endpoint" -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
     if [[ "$response" != *"token"* ]]; then
-        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
+        echo -e "${RED}✘ WARP 注册失败，API 无响应或返回错误${PLAIN}"
         return 1
     fi
 
@@ -190,27 +190,34 @@ register_warp_account() {
     W_V6=$(echo "$response" | jq -r '(.config.interface.addresses.v6 // .config.interface.address.v6 // empty)' 2>/dev/null)
     W_PRIV="$priv"
 
-    # 5. 安全解析 Reserved 字段 (修复换行符带来的隐患)
+    # 5. 安全解析 Reserved 字段
     local client_id=$(echo "$response" | jq -r '.config.clientId // empty' 2>/dev/null)
     if [[ -n "$client_id" && "$client_id" != "null" ]]; then
-        # 使用 echo -n 防止换行符干扰 base64 解码
+        # 获取字节流
         W_RES_JSON=$(echo -n "$client_id" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' 2>/dev/null | sed 's/,$//')
-        [[ -n "$W_RES_JSON" ]] && W_RES_JSON="[ ]"
+        # 【修正点】：将解析出的数字包裹在方括号中，而不是重置为 "[ ]"
+        [[ -n "$W_RES_JSON" ] ] && W_RES_JSON="[$W_RES_JSON]"
     fi
+
+    # 如果解析失败，给个保底空数组
+    [[ -z "$W_RES_JSON" ]] && W_RES_JSON="[]"
 
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
         echo -e "${RED}✘ 解析失败（无可用 IP）${PLAIN}"; return 1
     fi
 
-    # 6. 【核心修复】：持久化写入本地文件
+    # 6. 持久化写入（修正了这里的潜在路径错误）
+    # 确保父目录存在
+    mkdir -p "$(dirname "$WARP_ENV_FILE")"
+    
     cat <<EOF > "$WARP_ENV_FILE"
 W_PRIV="$W_PRIV"
 W_V4="$W_V4"
 W_V6="$W_V6"
-W_RES_JSON="$W_RES_JSON"
+W_RES_JSON='$W_RES_JSON'
 EOF
 
-    echo -e "${GREEN}✔ WARP 账户申请成功并已保存！${PLAIN}"
+    echo -e "${GREEN}✔ WARP 账户申请成功并已保存到 $WARP_ENV_FILE${PLAIN}"
     return 0
 }
 
