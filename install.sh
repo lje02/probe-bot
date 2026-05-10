@@ -144,6 +144,274 @@ auto_backup() {
     rm -rf "/tmp/sb_auto_bak"
     echo -e "${YELLOW}[自动快照] 更新前已备份至: $B_NAME${PLAIN}"
 }
+register_warp_account() {
+    W_PRIV=""; W_V4=""; W_V6=""; W_RES_JSON=""
+
+    # ---------- 1. 依赖检查与安装 ----------
+    local deps=("wireguard-tools" "jq" "curl" "bsdmainutils")
+    local missing=()
+    for dep in "${deps[@]}"; do
+        if ! command -v "${dep%% *}" >/dev/null 2>&1; then
+            missing+=("$dep")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}安装依赖: ${missing[*]}${PLAIN}"
+        if command -v apt &>/dev/null; then
+            apt update && apt install -y "${missing[@]}"
+        elif command -v yum &>/dev/null; then
+            yum install -y "${missing[@]}"
+        else
+            echo -e "${RED}请手动安装: ${missing[*]}${PLAIN}"
+            return 1
+        fi
+    fi
+
+    # ---------- 2. 生成 WireGuard 密钥 ----------
+    local priv pub
+    priv=$(wg genkey) || { echo -e "${RED}生成私钥失败${PLAIN}"; return 1; }
+    pub=$(echo "$priv" | wg pubkey) || { echo -e "${RED}生成公钥失败${PLAIN}"; return 1; }
+
+    # ---------- 3. 调用 Cloudflare API ----------
+    echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
+    local tos_date
+    # 使用固定格式避免 date 命令差异（macOS / BusyBox 等）
+    if date -u +%FT%T.000Z >/dev/null 2>&1; then
+        tos_date=$(date -u +%FT%T.000Z)
+    else
+        tos_date="2024-01-01T00:00:00.000Z"
+    fi
+
+    local api_endpoint="https://api.cloudflareclient.com/v0a2158/reg"
+    local user_agent="okhttp/3.12.1"
+    local response
+    response=$(curl -s --connect-timeout 10 \
+        -H "Content-Type: application/json" \
+        -H "User-Agent: $user_agent" \
+        -X POST "$api_endpoint" \
+        -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+
+    # 如果 API 返回空或不是 JSON，尝试旧版端点
+    if [[ -z "$response" || "$response" != "{"* ]]; then
+        api_endpoint="https://api.cloudflareclient.com/v0a2445/reg"
+        response=$(curl -s --connect-timeout 10 \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: $user_agent" \
+            -X POST "$api_endpoint" \
+            -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+    fi
+
+    # ---------- 4. 基础检查（必须包含 token） ----------
+    if [[ "$response" != *"token"* ]]; then
+        echo -e "${RED}✘ WARP 注册失败${PLAIN}"
+        echo -e "${RED}API 返回：${response:-<empty>}${PLAIN}"
+        return 1
+    fi
+
+    # ---------- 5. 解析 IPv4 / IPv6 地址（自动适配路径） ----------
+    # 可能的新路径：.config.interface.addresses.v4
+    # 旧路径：.config.interface.address.v4
+    # 也可能 v4 字段为 null，此时可只使用 v6
+    W_V4=$(echo "$response" | jq -r '(.config.interface.addresses.v4 // .config.interface.address.v4 // empty)' 2>/dev/null)
+    W_V6=$(echo "$response" | jq -r '(.config.interface.addresses.v6 // .config.interface.address.v6 // empty)' 2>/dev/null)
+
+    # ---------- 6. 解析客户端 ID（用于后续生成 License） ----------
+    local client_id
+    client_id=$(echo "$response" | jq -r '.config.clientId // empty' 2>/dev/null)
+    if [[ -n "$client_id" && "$client_id" != "null" ]]; then
+        W_RES_JSON=$(echo "$client_id" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' 2>/dev/null | sed 's/,$//')
+        [[ -n "$W_RES_JSON" ]] && W_RES_JSON="[$W_RES_JSON]"
+    fi
+
+    # ---------- 7. 保存私钥 ----------
+    W_PRIV="$priv"
+
+    # ---------- 8. 结果判断（至少有一个地址可用） ----------
+    if [[ -z "$W_V4" && -z "$W_V6" ]]; then
+        echo -e "${RED}✘ 解析 WARP 账户失败（无可用 IPv4/IPv6 地址）${PLAIN}"
+        return 1
+    fi
+
+    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
+    [[ -n "$W_V4" ]] && echo -e "   IPv4: ${W_V4}"
+    [[ -n "$W_V6" ]] && echo -e "   IPv6: ${W_V6}"
+    return 0
+}
+
+# ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
+add_warp_outbound() {
+    if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" || -z "$W_PRIV" ]]; then
+        echo -e "${YELLOW}正在获取 WARP 账户数据...${PLAIN}"
+        register_warp_account || return 1
+    fi
+
+    if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}✘ 配置文件 $CONFIG_FILE JSON 语法错误，请先修复！${PLAIN}"
+        return 1
+    fi
+
+    echo -e "${YELLOW}正在检测主机网络栈环境...${PLAIN}"
+
+    # 1. 网络环境探测 (通过请求 Cloudflare 的 trace 接口判断)
+    local check_v4=$(curl -s4m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
+    local check_v6=$(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
+    
+    local warp_endpoint=""
+    local route_rules=""
+
+    # 2. 动态生成端点与分流策略
+    if [[ -n "$check_v6" && -z "$check_v4" ]]; then
+        echo -e "${GREEN}检测结果: 纯 IPv6 环境。将配置 WARP 接管全站 IPv4 流量。${PLAIN}"
+        warp_endpoint="2606:4700:d0::a29f:c001" # CF 官方 IPv6 端点
+        route_rules='[{"ip_cidr": ["0.0.0.0/0"], "outbound": "warp-out"}]'
+        
+    elif [[ -n "$check_v4" && -z "$check_v6" ]]; then
+        echo -e "${GREEN}检测结果: 纯 IPv4 环境。将配置 WARP 接管全站 IPv6 流量。${PLAIN}"
+        warp_endpoint="162.159.192.1" # CF 官方 IPv4 端点
+        route_rules='[{"ip_cidr": ["::/0"], "outbound": "warp-out"}]'
+        
+    else
+        echo -e "${GREEN}检测结果: 双栈 (IPv4+IPv6) 环境。将配置 WARP 仅接管流媒体与 AI (Google/Netflix/OpenAI) 流量以防风控。${PLAIN}"
+        warp_endpoint="162.159.192.1" # 双栈优先走 V4 隧道，延迟通常更低
+        # 针对双栈机器的精确分流，避免全局走 WARP 拖慢原生网速
+        route_rules='[{
+            "domain_suffix": ["openai.com", "netflix.com", "bing.com"],
+            "geosite": ["google", "netflix", "openai", "disney"],
+            "outbound": "warp-out"
+        }]'
+    fi
+
+    # 3. 准备本地地址数组
+    local addresses_json="["
+    [[ -n "$W_V4" ]] && addresses_json+="\"${W_V4}/32\""
+    [[ -n "$W_V4" && -n "$W_V6" ]] && addresses_json+=","
+    [[ -n "$W_V6" ]] && addresses_json+="\"${W_V6}/128\""
+    addresses_json+="]"
+
+    local tmp_cfg="/tmp/sing-box-warp-$$.json"
+    local error_output
+    
+    # 4. jq 核心注入逻辑
+    error_output=$(jq --arg priv "$W_PRIV" \
+        --arg endp "$warp_endpoint" \
+        --argjson addresses "$addresses_json" \
+        --argjson res "$W_RES_JSON" \
+        --argjson new_rules "$route_rules" \
+        '
+        # 清理历史遗留的 WARP 配置
+        del(.outbounds[]? | select(.tag == "warp-out")) |
+        (.route.rules // []) as $rules |
+        [ $rules[]? | select(.outbound != "warp-out") ] as $clean_rules |
+        
+        # 写入新的出站
+        .outbounds += [{
+            "type": "wireguard",
+            "tag": "warp-out",
+            "server": $endp,
+            "server_port": 2408,
+            "local_address": $addresses,
+            "private_key": $priv,
+            "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+            "reserved": $res,
+            "mtu": 1280
+        }] |
+        
+        # 将新生成的路由规则置于规则列表顶部，确保优先级最高
+        .route.rules = $new_rules + $clean_rules
+        ' "$CONFIG_FILE" > "$tmp_cfg" 2>&1)
+
+    if [[ $? -ne 0 || ! -s "$tmp_cfg" ]]; then
+        echo -e "${RED}✘ JSON 写入失败，错误信息：${PLAIN}"
+        echo "$error_output"
+        rm -f "$tmp_cfg"
+        return 1
+    fi
+
+    # 5. 安全拦截器检查
+    if ! sing-box check -c "$tmp_cfg" > /dev/null 2>&1; then
+        echo -e "${RED}✘ 冲突检测失败！生成的配置语法有误：${PLAIN}"
+        sing-box check -c "$tmp_cfg"
+        rm -f "$tmp_cfg"
+        return 1
+    fi
+
+    # 6. 生效重启
+    mv -f "$tmp_cfg" "$CONFIG_FILE"
+    
+    if save_and_restart; then
+        echo -e "${GREEN}✔ WARP 出站与智能路由配置成功并已生效！${PLAIN}"
+        return 0
+    else
+        echo -e "${RED}✘ 重启 sing-box 失败。${PLAIN}"
+        return 1
+    fi
+}
+
+# ========== WARP 全局落地开关 ==========
+toggle_warp() {
+    # 1. 如果当前已开启，则执行关闭逻辑
+    if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
+        echo -e "${YELLOW}检测到 WARP 已开启，正在关闭并还原直连...${PLAIN}"
+        jq 'del(.outbounds[]? | select(.tag == "warp-out")) | 
+            del(.route.rules[]? | select(.outbound == "warp-out"))' "$CONFIG_FILE" > tmp.json
+        mv -f tmp.json "$CONFIG_FILE"
+        save_and_restart
+        echo -e "${GREEN}✔ WARP 已关闭，恢复原生网络直连。${PLAIN}"
+        return 0
+    fi
+
+    # 2. 开启逻辑：确保有账户数据
+    if [[ -z "$W_PRIV" ]]; then
+        echo -e "${YELLOW}未检测到 WARP 账户，正在初始化...${PLAIN}"
+        register_warp_account || return 1
+    fi
+
+    echo -e "${YELLOW}正在开启 WARP 全局落地...${PLAIN}"
+    
+    # 探测环境决定 Endpoint
+    local check_v6=$(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
+    local endpoint="162.159.192.1" # 默认 V4
+    [[ -n "$check_v6" ]] && endpoint="2606:4700:d0::a29f:c001" # 纯 V6 或双栈优先用 V6 连 CF
+
+    # 准备本地地址数组
+    local addr_json="["
+    [[ -n "$W_V4" ]] && addr_json+="\"${W_V4}/32\""
+    [[ -n "$W_V4" && -n "$W_V6" ]] && addr_json+=","
+    [[ -n "$W_V6" ]] && addr_json+="\"${W_V6}/128\""
+    addr_json+="]"
+
+    # 3. 注入“全局落地”配置
+    # 注意：我们将 warp-out 放在出站列表前面，并添加一条不带任何过滤条件的路由规则
+    jq --arg priv "$W_PRIV" --arg endp "$endpoint" --argjson addr "$addr_json" --argjson res "$W_RES_JSON" \
+    '
+    .outbounds += [{
+        "type": "wireguard",
+        "tag": "warp-out",
+        "server": $endp,
+        "server_port": 2408,
+        "local_address": $addr,
+        "private_key": $priv,
+        "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+        "reserved": $res,
+        "mtu": 1280
+    }] |
+    # 全局落地规则：所有流量（除了已有的特定规则）全部交给 warp-out
+    .route.rules = [{"outbound": "warp-out"}] + (.route.rules // [])
+    ' "$CONFIG_FILE" > tmp.json
+
+    if sing-box check -c tmp.json >/dev/null 2>&1; then
+        mv -f tmp.json "$CONFIG_FILE"
+        save_and_restart
+        echo -e "${GREEN}✔ WARP 全局落地已开启！${PLAIN}"
+        echo -e "${BLUE}当前出口 IP 状态：${PLAIN}"
+        curl -4m3 ip.sb 2>/dev/null || echo "IPv4: 无连接"
+        curl -6m3 ip.sb 2>/dev/null || echo "IPv6: 无连接"
+    else
+        echo -e "${RED}✘ 配置生成错误，开启失败。${PLAIN}"
+        rm -f tmp.json
+    fi
+}
 
 backup_restore() {
     clear
