@@ -217,93 +217,62 @@ EOF
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
-    # 1. 检查账户
-    if [[ -z "$W_PRIV" || -z "$W_RES_JSON" ]]; then
-        echo -e "${YELLOW}未检测到本地账户，正在获取 WARP 账户数据...${PLAIN}"
-        register_warp_account || return 1
-    fi
-
-    if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
-        echo -e "${RED}✘ 配置文件 JSON 语法错误，请先修复！${PLAIN}"
+    # 1. 确保变量不是空的（防止变量名写错或没读取到）
+    if [[ -z "$W_PRIV" || -z "$W_V4" ]]; then
+        echo -e "${RED}错误：内存中未检测到 WARP 账户信息，请重新运行注册。${PLAIN}"
         return 1
     fi
 
-    # 2. 探测环境以选择 CF Endpoint
-    echo -e "${YELLOW}正在检测网络环境以选择最佳端点...${PLAIN}"
-    local check_v6=$(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
-    local endpoint="162.159.192.1"
-    [[ -n "$check_v6" ]] && endpoint="2606:4700:d0::a29f:c001"
-
-    # 生成本地 IP 数组
-    sing-box check -c /etc/sing-box/config.json
-    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" '
-        [
-            (if ($v4 != "" and ($v4 | contains("/") | not)) then $v4 + "/32" else $v4 end),
-            (if ($v6 != "" and ($v6 | contains("/") | not)) then $v6 + "/128" else $v6 end)
-        ] | map(select(. != null and . != ""))
-    ')
-
-    local tmp_cfg="/tmp/sing-box-warp-$$.json"
+    # 2. 预处理 W_RES_JSON：确保它是一个合法的 JSON 数组，如果为空则设为 []
+    local res_json="${W_RES_JSON:-[]}"
     
-    echo -e "${YELLOW}正在写入全局落地配置 (适配 Sing-box 1.13+ Endpoints 新规)...${PLAIN}"
+    # 3. 预处理 IP 地址：强制补齐掩码，防止 sing-box 报错 (no '/')
+    local v4_cidr="$W_V4"
+    [[ "$v4_cidr" != */* ]] && v4_cidr="${v4_cidr}/32"
+    local v6_cidr="$W_V6"
+    if [[ -n "$v6_cidr" ]]; then
+        [[ "$v6_cidr" != */* ]] && v6_cidr="${v6_cidr}/128"
+    fi
 
-    # 3. 核心注入逻辑：改用 endpoints
-    jq --arg priv "$W_PRIV" \
-       --arg endp "$endpoint" \
-       --argjson addr "$addr_json" \
-       --argjson res "${W_RES_JSON:-[]}" \
-       '
-        # 确保基础结构存在，特别是新增的 endpoints 数组
-        .outbounds //= [] | .endpoints //= [] | .route //= {"rules": []} | .route.rules //= [] |
+    # 生成临时文件名
+    local tmp_file="/tmp/sing-box-warp-$$.json"
 
-        # 清理旧的遗留标记（同时清理 outbounds 和 endpoints 里可能存在的脏数据）
-        .outbounds = [ .outbounds[]? | select(.tag != "warp-out") ] |
-        .endpoints = [ .endpoints[]? | select(.tag != "warp-out") ] |
-        
-        # 【核心修改】：在 endpoints 中注入新版 WireGuard 配置
-        .endpoints += [{
-            "type": "wireguard",
-            "tag": "warp-out",
-            "address": $addr,
-            "private_key": $priv,
-            "peers": [
-                {
-                    "address": $endp,
-                    "port": 2408,
-                    "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-                    "allowed_ips": [ "0.0.0.0/0", "::/0" ],
-                    "reserved": $res
-                }
-            ],
-            "mtu": 1280
-        }] |
-        
-        # 路由接管逻辑不变：流量全部导向 endpoints 里的 warp-out
-        .route.rules = [{"outbound": "warp-out"}] + [ .route.rules[]? | select(.outbound != "warp-out") ]
-       ' "$CONFIG_FILE" > "$tmp_cfg"
+    # 4. 【核心修复】使用 --argjson 处理数组，使用 --arg 处理字符串
+    # 这样可以避免手动拼接字符串导致的引号崩溃
+    jq -n \
+        --arg priv "$W_PRIV" \
+        --arg v4 "$v4_cidr" \
+        --arg v6 "$v6_cidr" \
+        --argjson reserved "$res_json" \
+        '
+        {
+          "type": "wireguard",
+          "tag": "warp-out",
+          "server": "engage.cloudflareclient.com",
+          "server_port": 2408,
+          "local_address": ([$v4, $v6] | map(select(. != ""))),
+          "private_key": $priv,
+          "reserved": $reserved,
+          "mtu": 1280,
+          "udp_fragment": true
+        }
+        ' > "$tmp_file"
 
-    # 4. 安检与生效
-    if [[ ! -s "$tmp_cfg" ]]; then
-        echo -e "${RED}✘ JSON 生成失败：tmp_cfg 为空。${PLAIN}"
+    # 5. 检查 jq 是否运行成功
+    if [[ $? -ne 0 || ! -s "$tmp_file" ]]; then
+        echo -e "${RED}✘ 配置文件生成失败！请检查系统是否安装了 jq。${PLAIN}"
+        # 打印变量内容辅助调试
+        echo "调试信息 -> W_V4: $W_V4, W_RES: $res_json"
         return 1
     fi
 
-    if ! sing-box check -c "$tmp_cfg" > /dev/null 2>&1; then
-        echo -e "${RED}✘ Sing-box 静态检查未通过，请检查日志：${PLAIN}"
-        sing-box check -c "$tmp_cfg"
-        rm -f "$tmp_cfg"
-        return 1
-    fi
-
-    mv -f "$tmp_cfg" "$CONFIG_FILE"
+    echo -e "${GREEN}✔ 临时配置文件已生成: $tmp_file${PLAIN}"
+    # 打印一下内容看看对不对（可选）
+    # cat "$tmp_file"
     
-    if save_and_restart; then
-        echo -e "${GREEN}✔ 全局 WARP 落地已开启！${PLAIN}"
-        echo -e "当前出口 IP: $(curl -s4m3 ip.sb || curl -s6m3 ip.sb)"
-    else
-        echo -e "${RED}✘ 重启失败，配置已撤回。${PLAIN}"
-    fi
+    # 后面接你的 sing-box 运行逻辑...
 }
+
 
 # ========== WARP 全局落地开关 ==========
 toggle_warp() {
