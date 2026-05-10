@@ -131,6 +131,62 @@ apply_cert() {
     pause
 }
 
+install_warp_standard() {
+    echo -e "${CYAN}正在配置 WARP 官方 SOCKS5 落地...${PLAIN}"
+
+    # 1. 执行安装（调用上一条回复中的安装逻辑）
+    install_warp_official || return 1
+
+    # 2. 等待服务启动并连接
+    echo -e "${YELLOW}等待 WARP 获取授权并连接...${PLAIN}"
+    sleep 3
+    
+    # 检查连接状态
+    local status=$(warp-cli status)
+    if [[ "$status" == *"Connected"* ]]; then
+        echo -e "${GREEN}✔ WARP 已连接成功！${PLAIN}"
+    else
+        echo -e "${RED}✘ WARP 连接异常，当前状态: $status${PLAIN}"
+        return 1
+    fi
+
+    # 3. 验证本地端口是否开放
+    if ss -tulpn | grep -q ":40000"; then
+        echo -e "${GREEN}✔ 本地 SOCKS5 端口 (40000) 已就绪${PLAIN}"
+    else
+        echo -e "${RED}✘ 端口 40000 未响应，请检查 warp-cli settings${PLAIN}"
+        return 1
+    fi
+}
+
+apply_warp_to_singbox() {
+    local MAIN_CONFIG="/etc/sing-box/config.json"
+    local TEMP_CONFIG="/tmp/singbox_warp_temp.json"
+
+    echo -e "${YELLOW}正在更新 Sing-box 出站规则...${PLAIN}"
+
+    # 使用 jq 注入 SOCKS5 出站
+    # 这种方式不会破坏你原有的 Inbounds 或 Route 逻辑
+    jq '
+        .outbounds = ([ .outbounds[]? | select(.tag != "warp-out") ] + [{
+            "type": "socks",
+            "tag": "warp-out",
+            "server": "127.0.0.1",
+            "server_port": 40000
+        }])
+    ' "$MAIN_CONFIG" > "$TEMP_CONFIG"
+
+    # 校验并替换
+    if sing-box check -c "$TEMP_CONFIG" >/dev/null 2>&1; then
+        mv "$TEMP_CONFIG" "$MAIN_CONFIG"
+        systemctl restart sing-box
+        echo -e "${GREEN}✔ Sing-box 已配置 WARP 落地并重启${PLAIN}"
+    else
+        echo -e "${RED}✘ 配置文件校验失败，请手动检查 $MAIN_CONFIG${PLAIN}"
+        sing-box check -c "$TEMP_CONFIG"
+    fi
+}
+
 auto_backup() {
     mkdir -p "$BACKUP_DIR"
     local TIME=$(date +%Y%m%d_%H%M%S)
@@ -1208,7 +1264,9 @@ while true; do
     echo "8. 开启 BBR 网络加速"
     echo "9. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
-    echo "11 更改配置/删除"
+    echo "11. 更改配置/删除"
+    echo "12. 安装官方warp"
+    echo "13. 配置warp"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -1226,6 +1284,8 @@ while true; do
         9) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
+        12) install_warp_standard ;;
+        13) add_warp_outbound;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
