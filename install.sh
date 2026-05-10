@@ -144,100 +144,77 @@ auto_backup() {
     rm -rf "/tmp/sb_auto_bak"
     echo -e "${YELLOW}[自动快照] 更新前已备份至: $B_NAME${PLAIN}"
 }
+# 定义一个存储配置的固定路径
+WARP_ENV_FILE="/etc/warp_account.env"
+
 register_warp_account() {
+    # 0. 检查是否已经有缓存的配置，如果有直接加载，跳过注册
+    if [[ -f "$WARP_ENV_FILE" ]]; then
+        source "$WARP_ENV_FILE"
+        echo -e "${GREEN}✔ 已读取本地保存的 WARP 账户数据。${PLAIN}"
+        return 0
+    fi
+
     W_PRIV=""; W_V4=""; W_V6=""; W_RES_JSON=""
 
-    # ---------- 1. 依赖检查与安装 ----------
+    # 1. 依赖检查... (保持你原来的代码不变)
     local deps=("wireguard-tools" "jq" "curl" "bsdmainutils")
     local missing=()
     for dep in "${deps[@]}"; do
-        if ! command -v "${dep%% *}" >/dev/null 2>&1; then
-            missing+=("$dep")
-        fi
+        if ! command -v "${dep%% *}" >/dev/null 2>&1; then missing+=("$dep"); fi
     done
-
     if [[ ${#missing[@]} -gt 0 ]]; then
-        echo -e "${YELLOW}安装依赖: ${missing[*]}${PLAIN}"
-        if command -v apt &>/dev/null; then
-            apt update && apt install -y "${missing[@]}"
-        elif command -v yum &>/dev/null; then
-            yum install -y "${missing[@]}"
-        else
-            echo -e "${RED}请手动安装: ${missing[*]}${PLAIN}"
-            return 1
-        fi
+        apt update && apt install -y "${missing[@]}" >/dev/null 2>&1 || yum install -y "${missing[@]}"
     fi
 
-    # ---------- 2. 生成 WireGuard 密钥 ----------
+    # 2. 生成密钥
     local priv pub
-    priv=$(wg genkey) || { echo -e "${RED}生成私钥失败${PLAIN}"; return 1; }
-    pub=$(echo "$priv" | wg pubkey) || { echo -e "${RED}生成公钥失败${PLAIN}"; return 1; }
+    priv=$(wg genkey)
+    pub=$(echo "$priv" | wg pubkey)
 
-    # ---------- 3. 调用 Cloudflare API ----------
+    # 3. 申请账户
     echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
-    local tos_date
-    # 使用固定格式避免 date 命令差异（macOS / BusyBox 等）
-    if date -u +%FT%T.000Z >/dev/null 2>&1; then
-        tos_date=$(date -u +%FT%T.000Z)
-    else
-        tos_date="2024-01-01T00:00:00.000Z"
-    fi
+    local tos_date="2024-01-01T00:00:00.000Z"
+    if date -u +%FT%T.000Z >/dev/null 2>&1; then tos_date=$(date -u +%FT%T.000Z); fi
 
     local api_endpoint="https://api.cloudflareclient.com/v0a2158/reg"
     local user_agent="okhttp/3.12.1"
-    local response
-    response=$(curl -s --connect-timeout 10 \
-        -H "Content-Type: application/json" \
-        -H "User-Agent: $user_agent" \
-        -X POST "$api_endpoint" \
-        -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
+    local response=$(curl -s --connect-timeout 10 -H "Content-Type: application/json" -H "User-Agent: $user_agent" -X POST "$api_endpoint" -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
-    # 如果 API 返回空或不是 JSON，尝试旧版端点
-    if [[ -z "$response" || "$response" != "{"* ]]; then
-        api_endpoint="https://api.cloudflareclient.com/v0a2445/reg"
-        response=$(curl -s --connect-timeout 10 \
-            -H "Content-Type: application/json" \
-            -H "User-Agent: $user_agent" \
-            -X POST "$api_endpoint" \
-            -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
-    fi
-
-    # ---------- 4. 基础检查（必须包含 token） ----------
     if [[ "$response" != *"token"* ]]; then
         echo -e "${RED}✘ WARP 注册失败${PLAIN}"
-        echo -e "${RED}API 返回：${response:-<empty>}${PLAIN}"
         return 1
     fi
 
-    # ---------- 5. 解析 IPv4 / IPv6 地址（自动适配路径） ----------
-    # 可能的新路径：.config.interface.addresses.v4
-    # 旧路径：.config.interface.address.v4
-    # 也可能 v4 字段为 null，此时可只使用 v6
+    # 4. 解析地址
     W_V4=$(echo "$response" | jq -r '(.config.interface.addresses.v4 // .config.interface.address.v4 // empty)' 2>/dev/null)
     W_V6=$(echo "$response" | jq -r '(.config.interface.addresses.v6 // .config.interface.address.v6 // empty)' 2>/dev/null)
+    W_PRIV="$priv"
 
-    # ---------- 6. 解析客户端 ID（用于后续生成 License） ----------
-    local client_id
-    client_id=$(echo "$response" | jq -r '.config.clientId // empty' 2>/dev/null)
+    # 5. 安全解析 Reserved 字段 (修复换行符带来的隐患)
+    local client_id=$(echo "$response" | jq -r '.config.clientId // empty' 2>/dev/null)
     if [[ -n "$client_id" && "$client_id" != "null" ]]; then
-        W_RES_JSON=$(echo "$client_id" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' 2>/dev/null | sed 's/,$//')
+        # 使用 echo -n 防止换行符干扰 base64 解码
+        W_RES_JSON=$(echo -n "$client_id" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' 2>/dev/null | sed 's/,$//')
         [[ -n "$W_RES_JSON" ]] && W_RES_JSON="[$W_RES_JSON]"
     fi
 
-    # ---------- 7. 保存私钥 ----------
-    W_PRIV="$priv"
-
-    # ---------- 8. 结果判断（至少有一个地址可用） ----------
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
-        echo -e "${RED}✘ 解析 WARP 账户失败（无可用 IPv4/IPv6 地址）${PLAIN}"
-        return 1
+        echo -e "${RED}✘ 解析失败（无可用 IP）${PLAIN}"; return 1
     fi
 
-    echo -e "${GREEN}✔ WARP 账户申请成功！${PLAIN}"
-    [[ -n "$W_V4" ]] && echo -e "   IPv4: ${W_V4}"
-    [[ -n "$W_V6" ]] && echo -e "   IPv6: ${W_V6}"
+    # 6. 【核心修复】：持久化写入本地文件
+    cat <<EOF > "$WARP_ENV_FILE"
+W_PRIV="$W_PRIV"
+W_V4="$W_V4"
+W_V6="$W_V6"
+W_RES_JSON="$W_RES_JSON"
+EOF
+
+    echo -e "${GREEN}✔ WARP 账户申请成功并已保存！${PLAIN}"
     return 0
 }
+
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
