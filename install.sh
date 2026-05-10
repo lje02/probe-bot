@@ -241,66 +241,69 @@ register_warp_account() {
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
-    # 1. 检查并注册账户 (确保变量不为空)
+    # 1. 检查账户
     if [[ -z "$W_PRIV" || -z "$W_RES_JSON" ]]; then
         echo -e "${YELLOW}未检测到本地账户，正在获取 WARP 账户数据...${PLAIN}"
         register_warp_account || return 1
     fi
 
-    # 2. 检查主配置合法性
     if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
         echo -e "${RED}✘ 配置文件 JSON 语法错误，请先修复！${PLAIN}"
         return 1
     fi
 
-    # 3. 环境探测 (仅用于决定连接哪个端点)
+    # 2. 探测环境以选择 CF Endpoint
     echo -e "${YELLOW}正在检测网络环境以选择最佳端点...${PLAIN}"
     local check_v6=$(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
-    local endpoint="162.159.192.1" # 默认 V4
-    [[ -n "$check_v6" ]] && endpoint="2606:4700:d0::a29f:c001" # 纯 V6 或双栈优先走 V6
+    local endpoint="162.159.192.1"
+    [[ -n "$check_v6" ]] && endpoint="2606:4700:d0::a29f:c001"
 
-    # 4. 安全地构建地址数组 (不再手动拼字符串，防止逗号错误)
+    # 生成本地 IP 数组
     local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" \
         '[$v4 + "/32", $v6 + "/128"] | map(select(. != "/32" and . != "/128"))')
 
     local tmp_cfg="/tmp/sing-box-warp-$$.json"
     
-    echo -e "${YELLOW}正在写入全局落地配置...${PLAIN}"
+    echo -e "${YELLOW}正在写入全局落地配置 (适配 Sing-box 1.13+ Endpoints 新规)...${PLAIN}"
 
-    # 5. 核心注入逻辑 (强制全局路由)
-    # 使用 --argjson 注入时，如果变量为空 jq 会报错，所以这里加了默认值判断
+    # 3. 核心注入逻辑：改用 endpoints
     jq --arg priv "$W_PRIV" \
        --arg endp "$endpoint" \
        --argjson addr "$addr_json" \
        --argjson res "${W_RES_JSON:-[]}" \
        '
-        # 确保基础结构存在
-        .outbounds //= [] | .route //= {"rules": []} | .route.rules //= [] |
+        # 确保基础结构存在，特别是新增的 endpoints 数组
+        .outbounds //= [] | .endpoints //= [] | .route //= {"rules": []} | .route.rules //= [] |
 
-        # 移除旧的 warp 标记
-        del(.outbounds[]? | select(.tag == "warp-out")) |
+        # 清理旧的遗留标记（同时清理 outbounds 和 endpoints 里可能存在的脏数据）
+        .outbounds = [ .outbounds[]? | select(.tag != "warp-out") ] |
+        .endpoints = [ .endpoints[]? | select(.tag != "warp-out") ] |
         
-        # 插入新的 WireGuard 出站
-        .outbounds += [{
+        # 【核心修改】：在 endpoints 中注入新版 WireGuard 配置
+        .endpoints += [{
             "type": "wireguard",
             "tag": "warp-out",
-            "server": $endp,
-            "server_port": 2408,
-            "local_address": $addr,
+            "address": $addr,
             "private_key": $priv,
-            "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-            "reserved": $res,
+            "peers": [
+                {
+                    "address": $endp,
+                    "port": 2408,
+                    "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+                    "allowed_ips": [ "0.0.0.0/0", "::/0" ],
+                    "reserved": $res
+                }
+            ],
             "mtu": 1280
         }] |
         
-        # 【核心：全局落地规则】
-        # 将无条件的 warp-out 规则放在路由表最顶端
+        # 路由接管逻辑不变：流量全部导向 endpoints 里的 warp-out
         .route.rules = [{"outbound": "warp-out"}] + [ .route.rules[]? | select(.outbound != "warp-out") ]
        ' "$CONFIG_FILE" > "$tmp_cfg"
 
-    # 6. 安检与生效
+    # 4. 安检与生效
     if [[ ! -s "$tmp_cfg" ]]; then
-        echo -e "${RED}✘ JSON 生成失败：tmp_cfg 为空。请检查 W_RES_JSON 是否正确。${PLAIN}"
+        echo -e "${RED}✘ JSON 生成失败：tmp_cfg 为空。${PLAIN}"
         return 1
     fi
 
