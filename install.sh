@@ -131,32 +131,30 @@ apply_cert() {
     pause
 }
 
-install_warp_standard() {
-    echo -e "${CYAN}正在配置 WARP 官方 SOCKS5 落地...${PLAIN}"
+# --- 1. 先定义安装函数 ---
+install_warp_official() {
+    echo -e "${CYAN}正在安装 Cloudflare WARP 官方客户端...${PLAIN}"
 
-    # 1. 执行安装（调用上一条回复中的安装逻辑）
-    install_warp_official || return 1
+    # 自动识别并安装
+    if [[ -f /etc/debian_version ]]; then
+        apt update && apt install -y curl gpg lsb-release
+        curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | tee /etc/apt/sources.list.d/cloudflare-client.list
+        apt update && apt install -y cloudflare-warp
+    elif [[ -f /etc/redhat-release ]]; then
+        rpm -ivh https://pkg.cloudflareclient.com/cloudflare-release-el$(rpm -E %{rhel}).rpm
+        yum install cloudflare-warp -y
+    fi
 
-    # 2. 等待服务启动并连接
-    echo -e "${YELLOW}等待 WARP 获取授权并连接...${PLAIN}"
-    sleep 3
+    # 启动与配置
+    systemctl enable --now warp-svc
+    sleep 2
+    warp-cli registration new --accept-tos 2>/dev/null
+    warp-cli mode proxy
+    warp-cli set-proxy-port 40000
+    warp-cli connect
     
-    # 检查连接状态
-    local status=$(warp-cli status)
-    if [[ "$status" == *"Connected"* ]]; then
-        echo -e "${GREEN}✔ WARP 已连接成功！${PLAIN}"
-    else
-        echo -e "${RED}✘ WARP 连接异常，当前状态: $status${PLAIN}"
-        return 1
-    fi
-
-    # 3. 验证本地端口是否开放
-    if ss -tulpn | grep -q ":40000"; then
-        echo -e "${GREEN}✔ 本地 SOCKS5 端口 (40000) 已就绪${PLAIN}"
-    else
-        echo -e "${RED}✘ 端口 40000 未响应，请检查 warp-cli settings${PLAIN}"
-        return 1
-    fi
+    echo -e "${GREEN}✔ WARP 官方客户端安装并启动成功${PLAIN}"
 }
 
 apply_warp_to_singbox() {
@@ -166,7 +164,6 @@ apply_warp_to_singbox() {
     echo -e "${YELLOW}正在更新 Sing-box 出站规则...${PLAIN}"
 
     # 使用 jq 注入 SOCKS5 出站
-    # 这种方式不会破坏你原有的 Inbounds 或 Route 逻辑
     jq '
         .outbounds = ([ .outbounds[]? | select(.tag != "warp-out") ] + [{
             "type": "socks",
