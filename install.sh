@@ -147,13 +147,10 @@ auto_backup() {
 }
 
 register_warp_account() {
-    # 0. 默认环境文件路径
     : "${WARP_ENV_FILE:=/etc/warp_account.env}"
 
-    # 如果已有保存文件，则尝试加载
     if [[ -f "$WARP_ENV_FILE" ]]; then
         source "$WARP_ENV_FILE"
-        # 校验关键变量是否齐全
         if [[ -n "$W_PRIV" && -n "$W_RES_JSON" && (-n "$W_V4" || -n "$W_V6") ]]; then
             echo -e "${GREEN}✔ 已读取本地保存的 WARP 账户数据。${PLAIN}"
             return 0
@@ -165,17 +162,34 @@ register_warp_account() {
 
     W_PRIV=""; W_V4=""; W_V6=""; W_RES_JSON=""
 
-    # 1. 依赖检查
-    local deps=("wireguard-tools" "jq" "curl" "bsdmainutils")
+    # 1. 依赖检查（仅核心工具，bsdmainutils 不再强制）
+    local deps=("wireguard-tools" "jq" "curl")
     local missing=()
     for dep in "${deps[@]}"; do
-        if ! command -v "${dep%% *}" >/dev/null 2>&1; then missing+=("$dep"); fi
+        if ! command -v "${dep%% *}" >/dev/null 2>&1; then
+            missing+=("$dep")
+        fi
     done
+
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${YELLOW}安装依赖: ${missing[*]}${PLAIN}"
-        apt update && apt install -y "${missing[@]}" || {
-            echo -e "${RED}依赖安装失败，请手动安装${PLAIN}"; return 1
-        }
+        local install_ok=true
+        if command -v apt &>/dev/null; then
+            apt update && apt install -y "${missing[@]}" || install_ok=false
+        elif command -v yum &>/dev/null; then
+            yum install -y "${missing[@]}" || install_ok=false
+        elif command -v dnf &>/dev/null; then
+            dnf install -y "${missing[@]}" || install_ok=false
+        elif command -v apk &>/dev/null; then
+            apk add --no-cache "${missing[@]}" || install_ok=false
+        else
+            echo -e "${RED}未检测到支持的包管理器，请手动安装: ${missing[*]}${PLAIN}"
+            return 1
+        fi
+        if ! $install_ok; then
+            echo -e "${RED}依赖安装失败，请手动安装${PLAIN}"
+            return 1
+        fi
     fi
 
     # 2. 生成密钥
@@ -183,21 +197,19 @@ register_warp_account() {
     priv=$(wg genkey) || return 1
     pub=$(echo "$priv" | wg pubkey) || return 1
 
-    # 3. 申请账户（带端点自愈）
+    # 3. 申请账户
     echo -e "${CYAN}正在通过 Cloudflare API 申请 WARP 账户...${PLAIN}"
     local tos_date="2024-01-01T00:00:00.000Z"
     date -u +%FT%T.000Z >/dev/null 2>&1 && tos_date=$(date -u +%FT%T.000Z)
 
     local user_agent="okhttp/3.12.1"
     local response
-    # 先尝试新端点
     response=$(curl -s --connect-timeout 10 \
         -H "Content-Type: application/json" \
         -H "User-Agent: $user_agent" \
         -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
         -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
 
-    # 若失败或非 JSON，回退旧端点
     if [[ -z "$response" || "$response" != "{"* ]]; then
         response=$(curl -s --connect-timeout 10 \
             -H "Content-Type: application/json" \
@@ -206,43 +218,47 @@ register_warp_account() {
             -d "{\"install_id\":\"\",\"tos\":\"$tos_date\",\"key\":\"$pub\",\"fcm_token\":\"\",\"type\":\"ios\",\"locale\":\"en_US\"}")
     fi
 
-    # 验证返回值
     if [[ "$response" != *"token"* ]]; then
         echo -e "${RED}✘ WARP 注册失败，API 返回：${response:-<empty>}${PLAIN}"
         return 1
     fi
 
-    # 4. 解析地址（自适应新旧路径）
+    # 4. 解析地址
     W_V4=$(echo "$response" | jq -r '(.config.interface.addresses.v4 // .config.interface.address.v4 // empty)' 2>/dev/null)
     W_V6=$(echo "$response" | jq -r '(.config.interface.addresses.v6 // .config.interface.address.v6 // empty)' 2>/dev/null)
     W_PRIV="$priv"
 
-    # 5. 安全解析 Reserved（兼容 client_id / clientId）
+    # 5. Reserved 解析（兼容 client_id / clientId）
     local client_id
     client_id=$(echo "$response" | jq -r '.config.client_id // .config.clientId // empty' 2>/dev/null)
     if [[ -n "$client_id" && "$client_id" != "null" ]]; then
-        # 解码 base64 → 字节流 → 数字数组
         local decoded
         decoded=$(echo -n "$client_id" | base64 -d 2>/dev/null)
         if [[ -n "$decoded" ]]; then
-            W_RES_JSON=$(echo "$decoded" | od -An -t u1 --endian=big | tr -s ' ' ',' | sed 's/^,//;s/,$//')
+            # 优先用 od，没有则用 hexdump
+            if command -v od &>/dev/null; then
+                W_RES_JSON=$(echo "$decoded" | od -An -t u1 --endian=big | tr -s ' ' ',' | sed 's/^,//;s/,$//')
+            elif command -v hexdump &>/dev/null; then
+                W_RES_JSON=$(echo "$decoded" | hexdump -v -e '/1 "%d,"' | sed 's/,$//')
+            else
+                echo -e "${RED}✘ 缺少 od 或 hexdump，无法解析客户端 ID，请安装 coreutils 或 bsdmainutils${PLAIN}"
+                return 1
+            fi
             [[ -n "$W_RES_JSON" ]] && W_RES_JSON="[$W_RES_JSON]"
         fi
     fi
 
-    # 若 reserved 解析失败，注册不完整，退出
     if [[ -z "$W_RES_JSON" || "$W_RES_JSON" == "[]" ]]; then
         echo -e "${RED}✘ Reserved 字段解析失败，无法继续${PLAIN}"
         return 1
     fi
 
-    # 地址校验（至少一个 IP）
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
         echo -e "${RED}✘ 未获取到任何 IP 地址${PLAIN}"
         return 1
     fi
 
-    # 6. 持久化写入（修复单引号不展开的 Bug）
+    # 6. 持久化
     mkdir -p "$(dirname "$WARP_ENV_FILE")"
     {
         echo "W_PRIV='$W_PRIV'"
