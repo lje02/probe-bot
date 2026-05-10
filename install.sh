@@ -236,7 +236,14 @@ add_warp_outbound() {
     [[ -n "$check_v6" ]] && endpoint="2606:4700:d0::a29f:c001"
 
     # 生成本地 IP 数组
-    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" '[$v4, $v6] | map(select(. != null and . != ""))')
+    sing-box check -c /etc/sing-box/config.json
+    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" '
+        [
+            (if ($v4 != "" and ($v4 | contains("/") | not)) then $v4 + "/32" else $v4 end),
+            (if ($v6 != "" and ($v6 | contains("/") | not)) then $v6 + "/128" else $v6 end)
+        ] | map(select(. != null and . != ""))
+    ')
+
     local tmp_cfg="/tmp/sing-box-warp-$$.json"
     
     echo -e "${YELLOW}正在写入全局落地配置 (适配 Sing-box 1.13+ Endpoints 新规)...${PLAIN}"
@@ -318,7 +325,14 @@ toggle_warp() {
     [[ -n $(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=") ]] && endpoint="2606:4700:d0::a29f:c001"
 
     # 格式化地址数组，确保不出现空元素导致 sing-box 报错
-    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" '[$v4, $v6] | map(select(. != null and . != ""))')
+    sing-box check -c /etc/sing-box/config.json
+    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" '
+        [
+            (if ($v4 != "" and ($v4 | contains("/") | not)) then $v4 + "/32" else $v4 end),
+            (if ($v6 != "" and ($v6 | contains("/") | not)) then $v6 + "/128" else $v6 end)
+        ] | map(select(. != null and . != ""))
+    ')
+
 
 
     echo -e "${YELLOW}正在注入全局 WARP 落地配置...${PLAIN}"
