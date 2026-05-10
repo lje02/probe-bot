@@ -212,68 +212,49 @@ backup_restore() {
 }
 
 install_base() {
-    echo -e "${CYAN}▶ 开始安装/重装基础组件...${PLAIN}"
+    echo -e "${GREEN}>>> 正在安装依赖并检测架构...${PLAIN}"
+    apt update -y && apt install -y curl jq openssl tar util-linux wget uuid-runtime
 
-    # ---------- 安装系统依赖 ----------
-    if command -v apt &>/dev/null; then
-        apt update && apt install -y wget tar curl socat uuid-runtime cron
-    elif command -v yum &>/dev/null; then
-        yum install -y wget tar curl socat util-linux cronie
-    else
-        echo -e "${RED}不支持的包管理器，请手动安装依赖${PLAIN}"
-        return 1
-    fi
-
-    # ---------- 安装 ssb 脚本自身到 /usr/local/bin ----------
-    # 如果本次运行不是从 /usr/local/bin/ssb 执行的，则复制过去
-    if [[ "$0" != "/usr/local/bin/ssb" ]]; then
-        cp "$0" /usr/local/bin/ssb
-        chmod +x /usr/local/bin/ssb
-        echo -e "${GREEN}ssb 脚本已安装到 /usr/local/bin/ssb${PLAIN}"
-    fi
-
-    # ---------- 安装/更新 sing-box ----------
-    local ARCH
+    local arch=""
     case "$(uname -m)" in
-        x86_64)  ARCH="amd64" ;;
-        aarch64) ARCH="arm64" ;;
-        armv7l)  ARCH="armv7" ;;
-        *) echo -e "${RED}错误：不支持的架构${PLAIN}"; return 1 ;;
+        x86_64) arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+        armv7l) arch="armv7" ;;
+        *) echo -e "${RED}不支持的架构: $(uname -m)${PLAIN}"; pause; return ;;
     esac
 
-    echo -e "${CYAN}获取 sing-box 最新版本...${PLAIN}"
-    local LATEST
-    LATEST=$(wget -qO- https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oP '"tag_name":\s*"\K[^"]+')
-    if [[ -z "$LATEST" ]]; then
-        echo -e "${RED}无法获取最新版本，请检查网络或 GitHub API 限制${PLAIN}"
-        return 1
-    fi
-    local VNO="${LATEST#v}"
-    local URL="https://github.com/SagerNet/sing-box/releases/download/${LATEST}/sing-box-${VNO}-linux-${ARCH}.tar.gz"
-    echo -e "下载地址：$URL"
-
-    local TMPD=$(mktemp -d)
-    wget -q --show-progress -O "$TMPD/sing-box.tar.gz" "$URL" || { rm -rf "$TMPD"; return 1; }
-    tar -xzf "$TMPD/sing-box.tar.gz" -C "$TMPD" || { rm -rf "$TMPD"; return 1; }
-
-    local BIN=$(find "$TMPD" -type f -name "sing-box" -executable | head -1)
-    if [[ -z "$BIN" ]]; then
-        echo -e "${RED}解压后未找到 sing-box 可执行文件${PLAIN}"
-        rm -rf "$TMPD"
-        return 1
-    fi
-    cp "$BIN" /usr/local/bin/sing-box
+    TAG=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r .tag_name)
+    echo -e "${CYAN}检测到架构: $arch, 正在下载版本: $TAG...${PLAIN}"
+    
+    local url="https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${arch}.tar.gz"
+    wget -O sing-box.tar.gz "$url"
+    tar -xzf sing-box.tar.gz
+    mv sing-box-*/sing-box /usr/local/bin/sing-box
     chmod +x /usr/local/bin/sing-box
-    rm -rf "$TMPD"
+    rm -rf sing-box*
 
-    # ---------- 创建配置目录 ----------
-    mkdir -p /etc/sing-box
+    cat > /etc/systemd/system/sing-box.service <<EOF
+[Unit]
+Description=sing-box service
+After=network.target nss-lookup.target
 
-    echo -e "${GREEN}✔ 基础组件安装完成！sing-box 版本：$LATEST${PLAIN}"
-    echo -e "ssb操作了。"
+[Service]
+ExecStart=/usr/local/bin/sing-box run -c $CONFIG_FILE
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=infinity
 
-    # 暂停等待
-    read -p "按回车键返回菜单..." dummy
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable sing-box
+    init_config
+    cp "$0" /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb
+    systemctl start sing-box
+    echo -e "${GREEN}安装完成！请输入 ssb 管理。${PLAIN}"
+    pause
 }
 
 add_node() {
