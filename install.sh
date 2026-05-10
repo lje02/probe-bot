@@ -132,7 +132,7 @@ apply_cert() {
 }
 
 # --- 1. 先定义安装函数 ---
-install_warp_standard() {
+install_warp_official() {
     echo -e "${CYAN}正在安装 Cloudflare WARP 官方客户端...${PLAIN}"
 
     # 自动识别并安装
@@ -157,13 +157,20 @@ install_warp_standard() {
     echo -e "${GREEN}✔ WARP 官方客户端安装并启动成功${PLAIN}"
 }
 
+# 注入 Sing-box 出站配置
 apply_warp_to_singbox() {
     local MAIN_CONFIG="/etc/sing-box/config.json"
     local TEMP_CONFIG="/tmp/singbox_warp_temp.json"
 
-    echo -e "${YELLOW}正在更新 Sing-box 出站规则...${PLAIN}"
+    # 检查主配置是否存在
+    if [[ ! -f "$MAIN_CONFIG" ]]; then
+        echo -e "${RED}✘ 错误：找不到 Sing-box 主配置文件 $MAIN_CONFIG${PLAIN}"
+        return 1
+    fi
 
-    # 使用 jq 注入 SOCKS5 出站
+    echo -e "${YELLOW}正在注入 WARP SOCKS5 出站配置...${PLAIN}"
+
+    # 使用 jq 动态添加或更新 warp-out 标签的出站
     jq '
         .outbounds = ([ .outbounds[]? | select(.tag != "warp-out") ] + [{
             "type": "socks",
@@ -177,11 +184,16 @@ apply_warp_to_singbox() {
     if sing-box check -c "$TEMP_CONFIG" >/dev/null 2>&1; then
         mv "$TEMP_CONFIG" "$MAIN_CONFIG"
         systemctl restart sing-box
-        echo -e "${GREEN}✔ Sing-box 已配置 WARP 落地并重启${PLAIN}"
+        echo -e "${GREEN}✔ Sing-box 已成功挂载 WARP 落地出口${PLAIN}"
     else
-        echo -e "${RED}✘ 配置文件校验失败，请手动检查 $MAIN_CONFIG${PLAIN}"
+        echo -e "${RED}✘ 配置文件校验失败，请检查主配置 JSON 格式${PLAIN}"
         sing-box check -c "$TEMP_CONFIG"
     fi
+}
+
+# 综合安装逻辑
+warp_one_click() {
+    install_warp_official && apply_warp_to_singbox
 }
 
 auto_backup() {
@@ -1262,8 +1274,7 @@ while true; do
     echo "9. 申请 SSL 域名证书 (ACME)"
     echo "10. 添加出站/用于自动/负载"
     echo "11. 更改配置/删除"
-    echo "12. 安装官方warp"
-    echo "13. 配置warp"
+    echo -e " ${GREEN}99.${PLAIN}  安装官方 WARP 并对接 Sing-box"
     echo "77. 彻底卸载"
     echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
     echo "0. 退出"
@@ -1281,8 +1292,6 @@ while true; do
         9) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
-        12) install_warp_standard ;;
-        13) apply_warp_to_singbox ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
@@ -1300,6 +1309,10 @@ while true; do
             echo -e "${YELLOW}正在重启服务...${PLAIN}"
             systemctl restart sing-box
             sleep 1
+            ;;
+    case $choice in
+        8)
+            warp_one_click
             ;;
         0) 
             echo -e "${GREEN}脚本已退出。${PLAIN}"
