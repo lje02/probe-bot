@@ -217,13 +217,39 @@ EOF
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
-    # ... 前面的变量检查和 IP 处理逻辑保持不变 ...
+    # 1. 环境与变量预检
+    # 确保已加载账户文件（防止手动调用时变量为空）
+    [[ -f "/etc/warp_account.env" ]] && source "/etc/warp_account.env"
 
-    # 【修复】去掉 local，确保全局可见，或者直接给它一个固定名称
-    # 使用全局变量名，方便 toggle_warp 读取
+    if [[ -z "$W_PRIV" || -z "$W_V4" ]]; then
+        echo -e "${RED}✘ 错误：未检测到 WARP 账户，请先运行注册函数 register_warp_account${PLAIN}"
+        return 1
+    fi
+
+    # 2. 数据清洗与规范化
+    # 修复 IP 格式：确保带有 CIDR 掩码，防止 sing-box 报错 (no '/')
+    local v4_cidr="${W_V4%/32}/32"
+    local v6_cidr=""
+    [[ -n "$W_V6" ]] && v6_cidr="${W_V6%/128}/128"
+
+    # 修复 Reserved 格式：确保是合法的 JSON 数组 [x,x,x]
+    local safe_res="[]"
+    if [[ "$W_RES_JSON" == "["*"]" ]]; then
+        # 验证是否为合法 JSON 数组
+        if echo "$W_RES_JSON" | jq -e . >/dev/null 2>&1; then
+            safe_res="$W_RES_JSON"
+        fi
+    fi
+
+    # 3. 确定端点 (Endpoint)
+    # 优先使用 IPv4 端点，如果有 IPv6 则可根据需要切换
+    local endpoint="162.159.192.1"
+    
+    # 4. 定义全局路径变量 (供外部函数 toggle_warp 使用)
     WARP_TMP_CONF="/tmp/sing-box-warp-fragment.json"
 
-    # 生成 JSON
+    # 5. 使用 jq 构造符合 Sing-box 1.13+ 标准的 Endpoints 结构
+    # 采用 --arg 传参比直接拼接字符串更安全，防转义崩溃
     jq -n \
         --arg priv "$W_PRIV" \
         --arg v4 "$v4_cidr" \
@@ -258,13 +284,15 @@ add_warp_outbound() {
         }
         ' > "$WARP_TMP_CONF"
 
+    # 6. 结果二次检查
     if [[ ! -s "$WARP_TMP_CONF" ]]; then
-        echo -e "${RED}✘ 临时片段生成失败${PLAIN}"
+        echo -e "${RED}✘ 致命错误：JSON 写入失败，请检查磁盘空间或 jq 安装情况${PLAIN}"
         return 1
     fi
+
+    echo -e "${GREEN}✔ WARP 配置片段已就绪: $WARP_TMP_CONF${PLAIN}"
     return 0
 }
-
 
 # ========== WARP 全局落地开关 ==========
 toggle_warp() {
