@@ -350,68 +350,73 @@ add_warp_outbound() {
 
 # ========== WARP 全局落地开关 ==========
 toggle_warp() {
-    # 1. 如果当前已开启，则执行关闭逻辑
+    # 1. 检测状态：如果已经有 warp-out，则执行“卸载”
     if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
-        echo -e "${YELLOW}检测到 WARP 已开启，正在关闭并还原直连...${PLAIN}"
+        echo -e "${YELLOW}正在还原原生网络 (卸载 WARP落地)...${PLAIN}"
         jq 'del(.outbounds[]? | select(.tag == "warp-out")) | 
             del(.route.rules[]? | select(.outbound == "warp-out"))' "$CONFIG_FILE" > tmp.json
         mv -f tmp.json "$CONFIG_FILE"
         save_and_restart
-        echo -e "${GREEN}✔ WARP 已关闭，恢复原生网络直连。${PLAIN}"
         return 0
     fi
 
-    # 2. 开启逻辑：确保有账户数据
-    if [[ -z "$W_PRIV" ]]; then
-        echo -e "${YELLOW}未检测到 WARP 账户，正在初始化...${PLAIN}"
-        register_warp_account || return 1
-    fi
-
-    echo -e "${YELLOW}正在开启 WARP 全局落地...${PLAIN}"
+    # 2. 准备开启：环境探测
+    [[ -z "$W_PRIV" ]] && { echo -e "${RED}✘ 错误: 找不到 WARP 账户数据，请先注册。${PLAIN}"; return 1; }
     
-    # 探测环境决定 Endpoint
-    local check_v6=$(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
-    local endpoint="162.159.192.1" # 默认 V4
-    [[ -n "$check_v6" ]] && endpoint="2606:4700:d0::a29f:c001" # 纯 V6 或双栈优先用 V6 连 CF
+    local endpoint="162.159.192.1"
+    [[ -n $(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=") ]] && endpoint="2606:4700:d0::a29f:c001"
 
-    # 准备本地地址数组
-    local addr_json="["
-    [[ -n "$W_V4" ]] && addr_json+="\"${W_V4}/32\""
-    [[ -n "$W_V4" && -n "$W_V6" ]] && addr_json+=","
-    [[ -n "$W_V6" ]] && addr_json+="\"${W_V6}/128\""
-    addr_json+="]"
+    # 格式化地址数组，确保不出现空元素导致 sing-box 报错
+    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" \
+        '[$v4 + "/32", $v6 + "/128"] | map(select(. != "/32" and . != "/128"))')
 
-    # 3. 注入“全局落地”配置
-    # 注意：我们将 warp-out 放在出站列表前面，并添加一条不带任何过滤条件的路由规则
+    echo -e "${YELLOW}正在注入全局 WARP 落地配置...${PLAIN}"
+
+    # 3. 按照你的模板进行精准注入
+    # 逻辑：
+    # - .outbounds //= [] 确保即便原文件没写出站也不会报错
+    # - 强制将 warp-out 插入出站列表首位
+    # - 在路由规则首位插入全局转发规则
     jq --arg priv "$W_PRIV" --arg endp "$endpoint" --argjson addr "$addr_json" --argjson res "$W_RES_JSON" \
     '
-    .outbounds += [{
-        "type": "wireguard",
-        "tag": "warp-out",
-        "server": $endp,
-        "server_port": 2408,
-        "local_address": $addr,
-        "private_key": $priv,
-        "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-        "reserved": $res,
-        "mtu": 1280
-    }] |
-    # 全局落地规则：所有流量（除了已有的特定规则）全部交给 warp-out
-    .route.rules = [{"outbound": "warp-out"}] + (.route.rules // [])
+    .outbounds //= [] | .route //= {"rules": []} | .route.rules //= [] |
+    
+    # 注入出站配置
+    .outbounds = [
+        {
+            "type": "wireguard",
+            "tag": "warp-out",
+            "server": $endp,
+            "server_port": 2408,
+            "local_address": $addr,
+            "private_key": $priv,
+            "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+            "reserved": $res,
+            "mtu": 1280
+        }
+    ] + [.outbounds[] | select(.tag != "warp-out")] |
+    
+    # 注入全局路由规则 (放在数组最前面，优先级最高)
+    .route.rules = [
+        {
+            "outbound": "warp-out"
+        }
+    ] + [.route.rules[] | select(.outbound != "warp-out")]
     ' "$CONFIG_FILE" > tmp.json
 
+    # 4. 安全检查与生效
     if sing-box check -c tmp.json >/dev/null 2>&1; then
         mv -f tmp.json "$CONFIG_FILE"
         save_and_restart
-        echo -e "${GREEN}✔ WARP 全局落地已开启！${PLAIN}"
-        echo -e "${BLUE}当前出口 IP 状态：${PLAIN}"
-        curl -4m3 ip.sb 2>/dev/null || echo "IPv4: 无连接"
-        curl -6m3 ip.sb 2>/dev/null || echo "IPv6: 无连接"
+        echo -e "${GREEN}✔ 全局落地已开启！${PLAIN}"
+        echo -e "当前出口 IP: $(curl -s4m3 ip.sb || curl -s6m3 ip.sb)"
     else
-        echo -e "${RED}✘ 配置生成错误，开启失败。${PLAIN}"
+        echo -e "${RED}✘ 配置校验失败！${PLAIN}"
+        sing-box check -c tmp.json # 显示具体哪里写错了
         rm -f tmp.json
     fi
 }
+
 
 backup_restore() {
     clear
