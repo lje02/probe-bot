@@ -241,110 +241,83 @@ register_warp_account() {
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
-    if [[ -z "$W_V4" && -z "$W_V6" ]] || [[ -z "$W_RES_JSON" || -z "$W_PRIV" ]]; then
-        echo -e "${YELLOW}正在获取 WARP 账户数据...${PLAIN}"
+    # 1. 检查并注册账户 (确保变量不为空)
+    if [[ -z "$W_PRIV" || -z "$W_RES_JSON" ]]; then
+        echo -e "${YELLOW}未检测到本地账户，正在获取 WARP 账户数据...${PLAIN}"
         register_warp_account || return 1
     fi
 
+    # 2. 检查主配置合法性
     if ! jq empty "$CONFIG_FILE" >/dev/null 2>&1; then
-        echo -e "${RED}✘ 配置文件 $CONFIG_FILE JSON 语法错误，请先修复！${PLAIN}"
+        echo -e "${RED}✘ 配置文件 JSON 语法错误，请先修复！${PLAIN}"
         return 1
     fi
 
-    echo -e "${YELLOW}正在检测主机网络栈环境...${PLAIN}"
-
-    # 1. 网络环境探测 (通过请求 Cloudflare 的 trace 接口判断)
-    local check_v4=$(curl -s4m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
+    # 3. 环境探测 (仅用于决定连接哪个端点)
+    echo -e "${YELLOW}正在检测网络环境以选择最佳端点...${PLAIN}"
     local check_v6=$(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=")
-    
-    local warp_endpoint=""
-    local route_rules=""
+    local endpoint="162.159.192.1" # 默认 V4
+    [[ -n "$check_v6" ]] && endpoint="2606:4700:d0::a29f:c001" # 纯 V6 或双栈优先走 V6
 
-    # 2. 动态生成端点与分流策略
-    if [[ -n "$check_v6" && -z "$check_v4" ]]; then
-        echo -e "${GREEN}检测结果: 纯 IPv6 环境。将配置 WARP 接管全站 IPv4 流量。${PLAIN}"
-        warp_endpoint="2606:4700:d0::a29f:c001" # CF 官方 IPv6 端点
-        route_rules='[{"ip_cidr": ["0.0.0.0/0"], "outbound": "warp-out"}]'
-        
-    elif [[ -n "$check_v4" && -z "$check_v6" ]]; then
-        echo -e "${GREEN}检测结果: 纯 IPv4 环境。将配置 WARP 接管全站 IPv6 流量。${PLAIN}"
-        warp_endpoint="162.159.192.1" # CF 官方 IPv4 端点
-        route_rules='[{"ip_cidr": ["::/0"], "outbound": "warp-out"}]'
-        
-    else
-        echo -e "${GREEN}检测结果: 双栈 (IPv4+IPv6) 环境。将配置 WARP 仅接管流媒体与 AI (Google/Netflix/OpenAI) 流量以防风控。${PLAIN}"
-        warp_endpoint="162.159.192.1" # 双栈优先走 V4 隧道，延迟通常更低
-        # 针对双栈机器的精确分流，避免全局走 WARP 拖慢原生网速
-        route_rules='[{
-            "domain_suffix": ["openai.com", "netflix.com", "bing.com"],
-            "geosite": ["google", "netflix", "openai", "disney"],
-            "outbound": "warp-out"
-        }]'
-    fi
-
-    # 3. 准备本地地址数组
-    local addresses_json="["
-    [[ -n "$W_V4" ]] && addresses_json+="\"${W_V4}/32\""
-    [[ -n "$W_V4" && -n "$W_V6" ]] && addresses_json+=","
-    [[ -n "$W_V6" ]] && addresses_json+="\"${W_V6}/128\""
-    addresses_json+="]"
+    # 4. 安全地构建地址数组 (不再手动拼字符串，防止逗号错误)
+    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" \
+        '[$v4 + "/32", $v6 + "/128"] | map(select(. != "/32" and . != "/128"))')
 
     local tmp_cfg="/tmp/sing-box-warp-$$.json"
-    local error_output
     
-    # 4. jq 核心注入逻辑
-    error_output=$(jq --arg priv "$W_PRIV" \
-        --arg endp "$warp_endpoint" \
-        --argjson addresses "$addresses_json" \
-        --argjson res "$W_RES_JSON" \
-        --argjson new_rules "$route_rules" \
-        '
-        # 清理历史遗留的 WARP 配置
+    echo -e "${YELLOW}正在写入全局落地配置...${PLAIN}"
+
+    # 5. 核心注入逻辑 (强制全局路由)
+    # 使用 --argjson 注入时，如果变量为空 jq 会报错，所以这里加了默认值判断
+    jq --arg priv "$W_PRIV" \
+       --arg endp "$endpoint" \
+       --argjson addr "$addr_json" \
+       --argjson res "${W_RES_JSON:-[]}" \
+       '
+        # 确保基础结构存在
+        .outbounds //= [] | .route //= {"rules": []} | .route.rules //= [] |
+
+        # 移除旧的 warp 标记
         del(.outbounds[]? | select(.tag == "warp-out")) |
-        (.route.rules // []) as $rules |
-        [ $rules[]? | select(.outbound != "warp-out") ] as $clean_rules |
         
-        # 写入新的出站
+        # 插入新的 WireGuard 出站
         .outbounds += [{
             "type": "wireguard",
             "tag": "warp-out",
             "server": $endp,
             "server_port": 2408,
-            "local_address": $addresses,
+            "local_address": $addr,
             "private_key": $priv,
             "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
             "reserved": $res,
             "mtu": 1280
         }] |
         
-        # 将新生成的路由规则置于规则列表顶部，确保优先级最高
-        .route.rules = $new_rules + $clean_rules
-        ' "$CONFIG_FILE" > "$tmp_cfg" 2>&1)
+        # 【核心：全局落地规则】
+        # 将无条件的 warp-out 规则放在路由表最顶端
+        .route.rules = [{"outbound": "warp-out"}] + [ .route.rules[]? | select(.outbound != "warp-out") ]
+       ' "$CONFIG_FILE" > "$tmp_cfg"
 
-    if [[ $? -ne 0 || ! -s "$tmp_cfg" ]]; then
-        echo -e "${RED}✘ JSON 写入失败，错误信息：${PLAIN}"
-        echo "$error_output"
-        rm -f "$tmp_cfg"
+    # 6. 安检与生效
+    if [[ ! -s "$tmp_cfg" ]]; then
+        echo -e "${RED}✘ JSON 生成失败：tmp_cfg 为空。请检查 W_RES_JSON 是否正确。${PLAIN}"
         return 1
     fi
 
-    # 5. 安全拦截器检查
     if ! sing-box check -c "$tmp_cfg" > /dev/null 2>&1; then
-        echo -e "${RED}✘ 冲突检测失败！生成的配置语法有误：${PLAIN}"
+        echo -e "${RED}✘ Sing-box 静态检查未通过，请检查日志：${PLAIN}"
         sing-box check -c "$tmp_cfg"
         rm -f "$tmp_cfg"
         return 1
     fi
 
-    # 6. 生效重启
     mv -f "$tmp_cfg" "$CONFIG_FILE"
     
     if save_and_restart; then
-        echo -e "${GREEN}✔ WARP 出站与智能路由配置成功并已生效！${PLAIN}"
-        return 0
+        echo -e "${GREEN}✔ 全局 WARP 落地已开启！${PLAIN}"
+        echo -e "当前出口 IP: $(curl -s4m3 ip.sb || curl -s6m3 ip.sb)"
     else
-        echo -e "${RED}✘ 重启 sing-box 失败。${PLAIN}"
-        return 1
+        echo -e "${RED}✘ 重启失败，配置已撤回。${PLAIN}"
     fi
 }
 
