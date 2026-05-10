@@ -303,78 +303,53 @@ add_warp_outbound() {
 
 # ========== WARP 全局落地开关 ==========
 toggle_warp() {
-    # 1. 检测状态：如果已经有 warp-out，则执行“卸载”
-    if jq -e '.outbounds[]? | select(.tag == "warp-out")' "$CONFIG_FILE" >/dev/null 2>&1; then
-        echo -e "${YELLOW}正在还原原生网络 (卸载 WARP落地)...${PLAIN}"
-        jq 'del(.outbounds[]? | select(.tag == "warp-out")) | 
-            del(.route.rules[]? | select(.outbound == "warp-out"))' "$CONFIG_FILE" > tmp.json
-        mv -f tmp.json "$CONFIG_FILE"
-        save_and_restart
-        return 0
+    # 1. 检查主配置文件是否存在
+    local MAIN_CONFIG="/etc/sing-box/config.json"
+    if [[ ! -f "$MAIN_CONFIG" ]]; then
+        echo -e "${RED}✘ 错误：找不到主配置文件 $MAIN_CONFIG${PLAIN}"
+        return 1
     fi
 
-    # 2. 准备开启：环境探测
-    [[ -z "$W_PRIV" ]] && { echo -e "${RED}✘ 错误: 找不到 WARP 账户数据，请先注册。${PLAIN}"; return 1; }
+    # 2. 调用我们刚才写好的 add_warp_outbound 生成最新的片段
+    # 假设 add_warp_outbound 成功后会将路径存入 $tmp_cfg
+    add_warp_outbound || return 1
     
-    local endpoint="162.159.192.1"
-    [[ -n $(curl -s6m3 https://cloudflare.com/cdn-cgi/trace | grep "ip=") ]] && endpoint="2606:4700:d0::a29f:c001"
+    echo -e "${YELLOW}正在合并配置到主文件...${PLAIN}"
 
-    # 格式化地址数组，确保不出现空元素导致 sing-box 报错
-    sing-box check -c /etc/sing-box/config.json
-    local addr_json=$(jq -n --arg v4 "$W_V4" --arg v6 "$W_V6" '
-        [
-            (if ($v4 != "" and ($v4 | contains("/") | not)) then $v4 + "/32" else $v4 end),
-            (if ($v6 != "" and ($v6 | contains("/") | not)) then $v6 + "/128" else $v6 end)
-        ] | map(select(. != null and . != ""))
-    ')
+    # 3. 【核心修复】使用变量传递，避免 EOF 错误
+    # 我们把临时文件的内容先读进变量，再注入主配置
+    local warp_content=$(cat "$tmp_cfg")
+    local final_tmp="/tmp/final_config_$$.json"
 
+    # 使用 jq 将 warp_outbound 的内容注入到主配置的 endpoints 和 route 中
+    # 并确保原有的配置不被破坏
+    jq --argjson warp "$warp_content" '
+        # 注入 endpoints
+        .endpoints = ($warp.endpoints + [ .endpoints[]? | select(.tag != "warp-out") ]) |
+        
+        # 强制将 warp-out 规则放到路由表的第一位（全局接管）
+        .route.rules = ($warp.route.rules + [ .route.rules[]? | select(.outbound != "warp-out") ])
+    ' "$MAIN_CONFIG" > "$final_tmp"
 
-
-    echo -e "${YELLOW}正在注入全局 WARP 落地配置...${PLAIN}"
-
-    # 3. 按照你的模板进行精准注入
-    # 逻辑：
-    # - .outbounds //= [] 确保即便原文件没写出站也不会报错
-    # - 强制将 warp-out 插入出站列表首位
-    # - 在路由规则首位插入全局转发规则
-    jq --arg priv "$W_PRIV" --arg endp "$endpoint" --argjson addr "$addr_json" --argjson res "$W_RES_JSON" \
-    '
-    .outbounds //= [] | .route //= {"rules": []} | .route.rules //= [] |
-    
-    # 注入出站配置
-    .outbounds = [
-        {
-            "type": "wireguard",
-            "tag": "warp-out",
-            "server": $endp,
-            "server_port": 2408,
-            "local_address": $addr,
-            "private_key": $priv,
-            "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-            "reserved": $res,
-            "mtu": 1280
-        }
-    ] + [.outbounds[] | select(.tag != "warp-out")] |
-    
-    # 注入全局路由规则 (放在数组最前面，优先级最高)
-    .route.rules = [
-        {
-            "outbound": "warp-out"
-        }
-    ] + [.route.rules[] | select(.outbound != "warp-out")]
-    ' "$CONFIG_FILE" > tmp.json
-
-    # 4. 安全检查与生效
-    if sing-box check -c tmp.json >/dev/null 2>&1; then
-        mv -f tmp.json "$CONFIG_FILE"
-        save_and_restart
-        echo -e "${GREEN}✔ 全局落地已开启！${PLAIN}"
-        echo -e "当前出口 IP: $(curl -s4m3 ip.sb || curl -s6m3 ip.sb)"
-    else
-        echo -e "${RED}✘ 配置校验失败！${PLAIN}"
-        sing-box check -c tmp.json # 显示具体哪里写错了
-        rm -f tmp.json
+    # 4. 检查生成是否成功
+    if [[ ! -s "$final_tmp" ]]; then
+        echo -e "${RED}✘ 合并失败：生成的配置文件为空！${PLAIN}"
+        rm -f "$final_tmp"
+        return 1
     fi
+
+    # 5. 校验最终文件
+    if ! sing-box check -c "$final_tmp" > /dev/null 2>&1; then
+        echo -e "${RED}✘ 最终配置校验失败！日志如下：${PLAIN}"
+        sing-box check -c "$final_tmp"
+        rm -f "$final_tmp"
+        return 1
+    fi
+
+    # 6. 替换并重启
+    mv -f "$final_tmp" "$MAIN_CONFIG"
+    systemctl restart sing-box
+    echo -e "${GREEN}✔ WARP 全局落地已成功开启并重启服务！${PLAIN}"
 }
 
 
