@@ -44,6 +44,23 @@ save_and_restart() {
     fi
 }
 
+# 辅助函数：只在指定的 CERT_DIR 目录下扫描
+find_certs() {
+    local domain=$1
+    local search_dir="$CERT_DIR/$domain"
+    
+    CERT_PATH=""; KEY_PATH=""
+    
+    if [[ -d "$search_dir" ]]; then
+        # 常见证书文件名列表（按优先级排序）
+        local c_names=("server.crt" "fullchain.cer" "fullchain.pem" "$domain.cer" "cert.pem")
+        local k_names=("server.key" "$domain.key" "privkey.pem" "cert.key")
+
+        for f in "${c_names[@]}"; do [[ -f "$search_dir/$f" ]] && CERT_PATH="$search_dir/$f" && break; done
+        for f in "${k_names[@]}"; do [[ -f "$search_dir/$f" ]] && KEY_PATH="$search_dir/$f" && break; done
+    fi
+}
+
 init_config() {
     mkdir -p /etc/sing-box "$LINK_DIR" "$CERT_DIR"
     if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
