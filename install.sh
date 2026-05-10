@@ -132,7 +132,7 @@ apply_cert() {
 }
 
 # --- 1. 先定义安装函数 ---
-install_warp_official() {
+install_warp_standard() {
     echo -e "${CYAN}正在安装 Cloudflare WARP 官方客户端...${PLAIN}"
 
     # 自动识别并安装
