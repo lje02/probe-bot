@@ -1260,31 +1260,34 @@ enable_bbr() {
 # --- 主菜单 ---
 while true; do
     clear
-    echo -e "--- ${YELLOW}sing-box 综合管理脚本 (ssb)${PLAIN} ---"
+    echo -e "==============================================="
+    echo -e "       ${YELLOW}Sing-box 综合管理脚本 (ssb)${PLAIN}"
+    echo -e "==============================================="
     show_status
-    echo "--------------------------------"
-    echo "1. 安装 / 重装 sing-box"
-    echo "2. 节点快速配置"
-    echo "3. 配置/链接查看"
-    echo "4. 链路管理（中转/落地/链式)"
-    echo "5. 分流设置/管理"
-    echo "6. 更新脚本或内核"
-    echo "7. 备份 / 还原"
-    echo "8. 开启 BBR 网络加速"
-    echo "9. 申请 SSL 域名证书 (ACME)"
-    echo "10. 添加出站/用于自动/负载"
-    echo "11. 更改配置/删除"
-    echo -e " ${GREEN}99.${PLAIN}  安装官方 WARP 并对接 Sing-box"
-    echo "77. 彻底卸载"
-    echo -e " \033[1;32m  [88]  重启 sing-box 服务\033[0m"
-    echo "0. 退出"
-    read -p "选择 [0-88]: " num
+    echo -e "-----------------------------------------------"
+    echo -e "  ${GREEN}1.${PLAIN} 安装 / 重装 sing-box"
+    echo -e "  ${GREEN}2.${PLAIN} 节点快速配置"
+    echo -e "  ${GREEN}3.${PLAIN} 配置 / 链接查看"
+    echo -e "  ${GREEN}4.${PLAIN} 链路管理（中转/落地/链式）"
+    echo -e "  ${GREEN}5.${PLAIN} 分流设置 / 管理"
+    echo -e "  ${GREEN}6.${PLAIN} 更新脚本或内核"
+    echo -e "  ${GREEN}7.${PLAIN} 备份 / 还原配置"
+    echo -e "  ${GREEN}8.${PLAIN} 开启 BBR 网络加速"
+    echo -e "  ${GREEN}9.${PLAIN} 申请 SSL 域名证书 (ACME)"
+    echo -e " ${GREEN}10.${PLAIN} 添加出站 / 用于自动 / 负载"
+    echo -e " ${GREEN}11.${PLAIN} 更改配置 / 删除"
+    echo -e " ${GREEN}12.${PLAIN} 安装官方 WARP 并对接 Sing-box"
+    echo -e "-----------------------------------------------"
+    # 将控制命令并排放在底部，使用独立的高位编号防止误触
+    echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${YELLOW}[0]${PLAIN} 退出"
+    echo -e "==============================================="
+    read -p " 请输入对应数字选择: " choice
     
-    case "$num" in
+    case "$choice" in
         1) install_base ;;
         2) add_node ;;
         3) manage_configs ;;
-        4) chain_proxy;;
+        4) chain_proxy ;;
         5) manage_routing ;;
         6) update_all ;;
         7) backup_restore ;;
@@ -1292,35 +1295,43 @@ while true; do
         9) apply_cert ;;
         10) add_outbound ;;
         11) edit_node ;;
+        12) warp_one_click ;;
+        88)
+            echo -e "${YELLOW}正在启动 Sing-box...${PLAIN}"
+            systemctl start sing-box
+            sleep 1
+            ;;
+        99)
+            echo -e "${YELLOW}正在停止 Sing-box...${PLAIN}"
+            systemctl stop sing-box
+            sleep 1
+            ;;
+        66)
+            echo -e "${YELLOW}正在重启 Sing-box...${PLAIN}"
+            systemctl restart sing-box
+            sleep 1
+            ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
-            if [[ "$confirm" == "y" ]]; then
-                systemctl stop sing-box
-                systemctl disable sing-box
+            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+                systemctl stop sing-box 2>/dev/null
+                systemctl disable sing-box 2>/dev/null
                 rm -f /etc/systemd/system/sing-box.service
                 systemctl daemon-reload
                 rm -f /usr/local/bin/ssb /usr/local/bin/sing-box
                 rm -rf /etc/sing-box
-                echo -e "${GREEN}sing-box 及相关配置已彻底卸载。${PLAIN}"
+                echo -e "${GREEN}✔ Sing-box 及相关配置已彻底卸载。${PLAIN}"
                 exit 0
             fi
-            ;;
-        88)
-            echo -e "${YELLOW}正在重启服务...${PLAIN}"
-            systemctl restart sing-box
-            sleep 1
-            ;;
-    case $choice in
-        8)
-            warp_one_click
             ;;
         0) 
             echo -e "${GREEN}脚本已退出。${PLAIN}"
             exit 0 
             ;;
         *) 
-            echo -e "${RED}输入错误，请重新选择${PLAIN}"
+            echo -e "${RED}✘ 输入错误，请重新选择${PLAIN}"
             sleep 1
             ;;
     esac
 done
+
