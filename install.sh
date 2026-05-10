@@ -1282,7 +1282,7 @@ while true; do
         10) add_outbound ;;
         11) edit_node ;;
         12) install_warp_standard ;;
-        13) add_warp_outbound ;;
+        13) apply_warp_to_singbox ;;
         77)
             read -p "确定卸载吗？此操作不可逆！(y/n): " confirm
             if [[ "$confirm" == "y" ]]; then
