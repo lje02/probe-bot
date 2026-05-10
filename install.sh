@@ -213,8 +213,18 @@ backup_restore() {
 
 install_base() {
     echo -e "${GREEN}>>> 正在安装依赖并检测架构...${PLAIN}"
-    apt update -y && apt install -y curl jq openssl tar util-linux wget uuid-runtime
 
+    # ---------- 安装依赖（兼容 apt/yum，jq） ----------
+    if command -v apt &>/dev/null; then
+        apt update -y && apt install -y curl jq tar wget uuid-runtime
+    elif command -v yum &>/dev/null; then
+        yum install -y curl jq tar wget util-linux
+    else
+        echo -e "${RED}不支持的包管理器，请手动安装依赖${PLAIN}"
+        pause && return
+    fi
+
+    # ---------- 架构检测 ----------
     local arch=""
     case "$(uname -m)" in
         x86_64) arch="amd64" ;;
@@ -223,15 +233,49 @@ install_base() {
         *) echo -e "${RED}不支持的架构: $(uname -m)${PLAIN}"; pause; return ;;
     esac
 
+    # ---------- 获取最新版本（jq） ----------
+    echo -e "${CYAN}获取 sing-box 最新版本...${PLAIN}"
     TAG=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r .tag_name)
-    echo -e "${CYAN}检测到架构: $arch, 正在下载版本: $TAG...${PLAIN}"
-    
+    if [[ -z "$TAG" ]]; then
+        echo -e "${RED}无法获取最新版本号，请检查网络或 GitHub API 限制${PLAIN}"
+        pause && return
+    fi
+    echo -e "${CYAN}检测到架构: $arch, 即将下载版本: $TAG${PLAIN}"
+
+    # ---------- 在安全临时目录中下载并解压 ----------
+    local TMP_DIR=$(mktemp -d)
     local url="https://github.com/SagerNet/sing-box/releases/download/${TAG}/sing-box-${TAG#v}-linux-${arch}.tar.gz"
-    wget -O sing-box.tar.gz "$url"
-    tar -xzf sing-box.tar.gz
-    mv sing-box-*/sing-box /usr/local/bin/sing-box
+
+    wget -q --show-progress -O "$TMP_DIR/sing-box.tar.gz" "$url" || {
+        echo -e "${RED}下载失败，请检查版本或网络${PLAIN}"
+        rm -rf "$TMP_DIR"
+        pause && return
+    }
+
+    tar -xzf "$TMP_DIR/sing-box.tar.gz" -C "$TMP_DIR" || {
+        echo -e "${RED}解压失败${PLAIN}"
+        rm -rf "$TMP_DIR"
+        pause && return
+    }
+
+    # 精确查找可执行文件，避免目录名变化导致 mv 失败
+    local BIN=$(find "$TMP_DIR" -type f -name "sing-box" -executable | head -1)
+    if [[ -z "$BIN" ]]; then
+        echo -e "${RED}未找到 sing-box 可执行文件${PLAIN}"
+        rm -rf "$TMP_DIR"
+        pause && return
+    fi
+
+    cp "$BIN" /usr/local/bin/sing-box
     chmod +x /usr/local/bin/sing-box
-    rm -rf sing-box*
+    rm -rf "$TMP_DIR"          # 用完即删，不留垃圾
+
+    # ---------- 创建 systemd 服务 ----------
+    # 如果外部没定义 CONFIG_FILE，赋予默认值
+    if [[ -z "$CONFIG_FILE" ]]; then
+        CONFIG_FILE="/etc/sing-box/config.json"
+        echo -e "${YELLOW}CONFIG_FILE 未定义，已默认使用 $CONFIG_FILE${PLAIN}"
+    fi
 
     cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
@@ -250,8 +294,22 @@ EOF
 
     systemctl daemon-reload
     systemctl enable sing-box
-    init_config
-    cp "$0" /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb
+
+    # 如果存在 init_config 函数则调用，否则只创建配置目录
+    if declare -F init_config &>/dev/null; then
+        init_config
+    else
+        mkdir -p "$(dirname "$CONFIG_FILE")"
+        echo -e "${YELLOW}init_config 函数未定义，已创建配置目录${PLAIN}"
+    fi
+
+    # ---------- 自复制脚本（避免覆盖自身） ----------
+    if [[ "$0" != "/usr/local/bin/ssb" ]]; then
+        cp "$0" /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb
+        echo -e "${GREEN}已安装 ssb 到 /usr/local/bin/ssb${PLAIN}"
+    fi
+
+    # ---------- 启动服务 ----------
     systemctl start sing-box
     echo -e "${GREEN}安装完成！请输入 ssb 管理。${PLAIN}"
     pause
