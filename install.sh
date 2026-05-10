@@ -196,7 +196,7 @@ register_warp_account() {
     if [[ -n "$client_id" && "$client_id" != "null" ]]; then
         # 使用 echo -n 防止换行符干扰 base64 解码
         W_RES_JSON=$(echo -n "$client_id" | base64 -d 2>/dev/null | hexdump -v -e '/1 "%d,"' 2>/dev/null | sed 's/,$//')
-        [[ -n "$W_RES_JSON" ]] && W_RES_JSON="[$W_RES_JSON]"
+        [[ -n "$W_RES_JSON" ]] && W_RES_JSON="[ ]"
     fi
 
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
