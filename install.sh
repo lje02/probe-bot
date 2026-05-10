@@ -274,136 +274,99 @@ register_warp_account() {
 
 # ========== 添加 WARP 出站 (全网络环境智能适配版) ==========
 add_warp_outbound() {
-    # 加载账户环境（如果未加载）
     [[ -f "/etc/warp_account.env" ]] && source "/etc/warp_account.env"
 
-    # 检查必须变量（至少一个 IP）
     if [[ -z "$W_PRIV" ]]; then
-        echo -e "${RED}✘ 错误：缺少 WARP 私钥，请先运行 register_warp_account${PLAIN}"
+        echo -e "${RED}✘ 缺少私钥，请先注册${PLAIN}"
         return 1
     fi
     if [[ -z "$W_V4" && -z "$W_V6" ]]; then
-        echo -e "${RED}✘ 错误：未获取到任何 WARP IP 地址${PLAIN}"
+        echo -e "${RED}✘ 无 WARP IP${PLAIN}"
         return 1
     fi
 
-    # 安全处理 reserved：无论原始是数组还是字符串包裹的数组，都转换为正确的 JSON 数组
+    # 强制将 reserved 转为纯数字数组（去除任何引号嵌套）
     local safe_res
     safe_res=$(echo "$W_RES_JSON" | jq -c '
         if type == "array" then .
-        elif type == "string" then fromjson
-        else empty end' 2>/dev/null)
+        elif type == "string" then (fromjson? // [])
+        else [] end
+    ')
 
-    if [[ -z "$safe_res" ]]; then
-        echo -e "${RED}✘ reserved 字段无效，请重新注册 WARP 账户${PLAIN}"
+    if [[ "$safe_res" == "[]" || -z "$safe_res" ]]; then
+        echo -e "${RED}✘ reserved 无效，请重新注册${PLAIN}"
         return 1
     fi
 
-    # 规范化 IP（确保带 CIDR 掩码）
-    local v4_cidr=""
-    [[ -n "$W_V4" ]] && v4_cidr="${W_V4%/32}/32"
-    local v6_cidr=""
-    [[ -n "$W_V6" ]] && v6_cidr="${W_V6%/128}/128"
+    local v4_cidr="${W_V4%/32}/32"
+    local v6_cidr=""; [[ -n "$W_V6" ]] && v6_cidr="${W_V6%/128}/128"
 
-    # 构造地址数组（过滤空值）
     local addrs_json
     addrs_json=$(jq -n --arg v4 "$v4_cidr" --arg v6 "$v6_cidr" '[ $v4, $v6 ] | map(select(. != ""))')
 
-    # 使用域名而非硬编码 IP
-    local endpoint="engage.cloudflareclient.com"
-    local fragment_file="/tmp/sing-box-warp-fragment.json"
-
+    local frag="/tmp/sing-box-warp-fragment.json"
     jq -n --arg priv "$W_PRIV" \
           --argjson addrs "$addrs_json" \
           --argjson res "$safe_res" \
-          --arg ep "$endpoint" \
     '{
-      "endpoints": [
-        {
-          "type": "wireguard",
-          "tag": "warp-out",
-          "address": $addrs,
-          "private_key": $priv,
-          "peers": [
-            {
-              "address": $ep,
-              "port": 2408,
-              "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
-              "allowed_ips": ["0.0.0.0/0", "::/0"],
-              "reserved": $res
-            }
-          ],
-          "mtu": 1280
-        }
-      ],
-      "route": {
-        "rules": [
-          { "outbound": "warp-out" }
-        ]
-      }
-    }' > "$fragment_file"
+      "endpoints": [{
+        "type": "wireguard",
+        "tag": "warp-out",
+        "address": $addrs,
+        "private_key": $priv,
+        "peers": [{
+            "address": "engage.cloudflareclient.com",
+            "port": 2408,
+            "public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+            "allowed_ips": ["0.0.0.0/0", "::/0"],
+            "reserved": $res
+        }],
+        "mtu": 1280
+      }],
+      "route": { "rules": [{ "outbound": "warp-out" }] }
+    }' > "$frag"
 
-    if [[ ! -s "$fragment_file" ]]; then
-        echo -e "${RED}✘ 生成 WARP 配置片段失败${PLAIN}"
+    if [[ -s "$frag" ]]; then
+        echo -e "${GREEN}✔ 片段生成成功${PLAIN}"
+        return 0
+    else
+        echo -e "${RED}✘ 片段生成失败${PLAIN}"
         return 1
     fi
-
-    echo -e "${GREEN}✔ WARP 配置片段已生成: $fragment_file${PLAIN}"
-    return 0
 }
 
-# ========== WARP 全局落地开关 ==========
 toggle_warp() {
-    local MAIN_CONFIG="/etc/sing-box/config.json"
-    local FRAGMENT="/tmp/sing-box-warp-fragment.json"
-    local MERGED="/tmp/sing-box-merged-$$.json"
+    local main="/etc/sing-box/config.json"
+    local frag="/tmp/sing-box-warp-fragment.json"
+    local merged="/tmp/sing-box-merged-$$.json"
 
-    # 生成 up‑to‑date 的片段（如果片段不存在或者想刷新）
     add_warp_outbound || return 1
 
-    # 检查当前状态：是否存在 warp-out 端点且 route.rules 中的第一条是 warp-out？
-    local has_endpoint has_rule
-    has_endpoint=$(jq -e '.endpoints[]? | select(.tag == "warp-out")' "$MAIN_CONFIG" 2>/dev/null)
-    has_rule=$(jq -e '.route.rules[0].outbound == "warp-out"' "$MAIN_CONFIG" 2>/dev/null)
+    local has_ep has_rule
+    has_ep=$(jq -e '.endpoints[]? | select(.tag == "warp-out")' "$main" 2>/dev/null)
+    has_rule=$(jq -e '.route.rules[0].outbound == "warp-out"' "$main" 2>/dev/null)
 
-    if [[ -n "$has_endpoint" && -n "$has_rule" ]]; then
-        # 当前已开启 → 关闭
-        echo -e "${YELLOW}当前 WARP 已开启，准备关闭...${PLAIN}"
-        jq '
-            del(.endpoints[] | select(.tag == "warp-out")) |
-            del(.route.rules[] | select(.outbound == "warp-out"))
-        ' "$MAIN_CONFIG" > "$MERGED"
+    if [[ -n "$has_ep" && -n "$has_rule" ]]; then
+        echo -e "${YELLOW}关闭 WARP...${PLAIN}"
+        jq 'del(.endpoints[] | select(.tag == "warp-out")) | del(.route.rules[] | select(.outbound == "warp-out"))' "$main" > "$merged"
     else
-        # 当前关闭 → 开启
-        echo -e "${YELLOW}正在开启 WARP 全局代理...${PLAIN}"
-        local warp_content=$(cat "$FRAGMENT")
-        if [[ -z "$warp_content" ]]; then
-            echo -e "${RED}✘ 片段内容为空，无法开启${PLAIN}"
-            return 1
-        fi
-        jq --argjson warp "$warp_content" '
+        echo -e "${YELLOW}开启 WARP...${PLAIN}"
+        local content=$(cat "$frag")
+        jq --argjson warp "$content" '
             .endpoints = ($warp.endpoints + [ .endpoints[]? | select(.tag != "warp-out") ]) |
             .route.rules = ($warp.route.rules + [ .route.rules[]? | select(.outbound != "warp-out") ])
-        ' "$MAIN_CONFIG" > "$MERGED"
+        ' "$main" > "$merged"
     fi
 
-    if [[ ! -s "$MERGED" ]]; then
-        echo -e "${RED}✘ 合并配置失败${PLAIN}"
-        return 1
-    fi
-
-    # 语法检查并应用
-    if sing-box check -c "$MERGED" > /dev/null 2>&1; then
-        cp "$MERGED" "$MAIN_CONFIG"
+    if sing-box check -c "$merged" >/dev/null 2>&1; then
+        cp "$merged" "$main"
         systemctl restart sing-box
-        echo -e "${GREEN}✔ 操作成功，sing‑box 已重启${PLAIN}"
+        echo -e "${GREEN}✔ 操作成功${PLAIN}"
     else
-        echo -e "${RED}✘ 新配置语法检查失败，旧配置已保留${PLAIN}"
-        sing-box check -c "$MERGED"   # 显示详细错误
+        echo -e "${RED}✘ 语法检查失败，详情如下：${PLAIN}"
+        sing-box check -c "$merged"
     fi
-
-    # 清理临时文件
-    rm -f "$MERGED" "$FRAGMENT"
+    rm -f "$merged" "$frag"
 }
 
 
