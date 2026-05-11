@@ -1357,7 +1357,6 @@ while true; do
             fi
             ;;
         0) 
-            echo -e "${GREEN}脚本已退出。${PLAIN}"
             exit 0 
             ;;
         *) 
