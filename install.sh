@@ -1357,7 +1357,7 @@ while true; do
             fi
             ;;
         0) 
-            echo -e "${RED}输入错误，请重新选择${PLAIN}"
+            echo -e "${GREEN}脚本已退出。${PLAIN}"
             exit 0 
             ;;
         *) 
