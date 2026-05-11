@@ -1306,9 +1306,9 @@ while true; do
     echo -e "  ${GREEN}7.${PLAIN} 备份 / 还原配置"
     echo -e "  ${GREEN}8.${PLAIN} 开启 BBR 网络加速"
     echo -e "  ${GREEN}9.${PLAIN} 申请 SSL 域名证书 (ACME)"
-    echo -e " ${GREEN}10.${PLAIN} 添加出站 / 用于自动 / 负载"
+    echo -e " ${GREEN}10.${PLAIN} 添加出站 /分流/自动优选/负载"
     echo -e " ${GREEN}11.${PLAIN} 更改配置 / 删除"
-    echo -e " ${GREEN}12.${PLAIN} 安装官方 WARP 并对接 Sing-box"
+    echo -e " ${GREEN}12.${PLAIN} 安装官方WARP并自动对接Sing-box"
     echo -e "-----------------------------------------------"
     # 将控制命令并排放在底部，使用独立的高位编号防止误触
     echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${YELLOW}[0]${PLAIN} 退出"
@@ -1357,7 +1357,7 @@ while true; do
             fi
             ;;
         0) 
-            echo -e "${RED}输入错误，请重新选择${PLAIN}"
+            #echo -e "${GREEN}脚本已退出。${PLAIN}"
             exit 0 
             ;;
         *) 
@@ -1366,3 +1366,4 @@ while true; do
             ;;
     esac
 done
+
