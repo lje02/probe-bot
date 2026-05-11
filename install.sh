@@ -1357,6 +1357,7 @@ while true; do
             fi
             ;;
         0) 
+            echo -e "${RED}输入错误，请重新选择${PLAIN}"
             exit 0 
             ;;
         *) 
