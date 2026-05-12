@@ -16,7 +16,7 @@ LINK_DIR="/etc/sing-box/links"
 CERT_DIR="/etc/sing-box/certs"
 BACKUP_DIR="/root/singbox_backup"
 SB_BIN=$(command -v sing-box || echo "/usr/local/bin/sing-box")
-UPDATE_URL="https://raw.githubusercontent.com/lje02/sing/main/install.sh"
+UPDATE_URL="https://raw.githubusercontent.com/lje02/liang/main/install.sh"
 
 [[ $EUID -ne 0 ]] && echo -e "${RED}错误: 必须使用 root 运行！${PLAIN}" && exit 1
 
@@ -376,41 +376,27 @@ EOF
     # ---------- 自复制脚本（避免覆盖自身） ----------
     if [[ "$0" != "/usr/local/bin/ssb" ]]; then
         cp "$0" /usr/local/bin/ssb && chmod +x /usr/local/bin/ssb
-        echo -e "${GREEN}已安装 ssb 到 /usr/local/bin/ssb${PLAIN}"
+        echo -e "${GREEN}安装到目录${PLAIN}"
     fi
 
     # ---------- 启动服务 ----------
     systemctl start sing-box
-    echo -e "${GREEN}安装完成！请输入 ssb 管理。${PLAIN}"
+    echo -e "${GREEN}安装完成${PLAIN}"
     pause
 }
 
 add_node() {
     clear
-    echo -e "${YELLOW}--- 添加节点配置 ---${PLAIN}"
-    echo -e "1. VLESS + Reality"
-    echo -e "2. TUIC v5"
-    echo -e "3. Hysteria2"
-    echo -e "4. Shadowsocks"
-    echo -e "5. VLESS + WS + CF"
-    echo -e "6. Socks5"
-    echo -e "7. HTTPS Proxy"
-    echo -e "8. Trojan"
-    echo -e "0. 返回"
+    echo -e "${YELLOW}--- 添加节点配置 ---${PLAIN}\n1. VLESS + Reality\n2. TUIC v5\n3. Hysteria2\n4. Shadowsocks\n5. VLESS + WS + CF\n6. Socks5\n7. HTTPS Proxy\n8. Trojan\n0. 返回"
     read -p "请选择 [0-8]: " choice
 
     [[ "$choice" == "0" || -z "$choice" ]] && return
 
-    # --- 基础变量初始化 ---
     local IP=$(get_ip)
     local UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-    local LINK=""
-    local TAG=""
+    local LINK="" TAG=""
 
-    # 内部工具：生成随机密码
-    gen_pass() {
-        echo "$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 12)"
-    }
+    gen_pass() { openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 12; }
 
     case $choice in
         1) # VLESS + Reality
@@ -422,44 +408,20 @@ add_node() {
             PUBLIC=$(echo "$KEYS" | awk -F': ' '/Public/ {print $2}' | tr -d '[:space:]')
             SID=$(openssl rand -hex 8)
 
-            jq --arg port "$PORT" \
-               --arg uuid "$UUID" \
-               --arg sni "$SNI" \
-               --arg priv "$PRIVATE" \
-               --arg sid "$SID" \
-               --arg tag "$TAG" \
-               '.inbounds += [{
-                    "type": "vless",
-                    "tag": $tag,
-                    "listen": "::",
-                    "listen_port": ($port|tonumber),
-                    "users": [{
-                        "uuid": $uuid,
-                        "flow": "xtls-rprx-vision"
-                    }],
-                    "tls": {
-                        "enabled": true,
-                        "server_name": $sni,
-                        "reality": {
-                            "enabled": true,
-                            "handshake": {
-                                "server": $sni,
-                                "server_port": 443
-                            },
-                            "private_key": $priv,
-                            "short_id": [$sid]
-                        }
-                    }
-                }]' "$CONFIG_FILE" > tmp.json
+            jq --arg port "$PORT" --arg uuid "$UUID" --arg sni "$SNI" --arg priv "$PRIVATE" --arg sid "$SID" --arg tag "$TAG" \
+               '.inbounds += [{"type":"vless","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid,"flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":$sni,"reality":{"enabled":true,"handshake":{"server":$sni,"server_port":443},"private_key":$priv,"short_id":[$sid]}}}]' \
+               "$CONFIG_FILE" > tmp.json
             LINK="vless://$UUID@$IP:$PORT?security=reality&sni=$SNI&fp=chrome&pbk=$PUBLIC&sid=$SID&type=tcp&flow=xtls-rprx-vision#$TAG"
             ;;
 
         2|3|7|8) # 需要证书的协议 (TUIC, Hy2, HTTPS, Trojan)
-            local p_type p_tag def_p
-            [[ "$choice" == "2" ]] && p_type="tuic" && def_p="8443"
-            [[ "$choice" == "3" ]] && p_type="hysteria2" && def_p="443"
-            [[ "$choice" == "7" ]] && p_type="http" && def_p="443"
-            [[ "$choice" == "8" ]] && p_type="trojan" && def_p="443"
+            local p_type def_p usr_json tls_json
+            case $choice in
+                2) p_type="tuic"; def_p="8443" ;;
+                3) p_type="hysteria2"; def_p="443" ;;
+                7) p_type="http"; def_p="443" ;;
+                8) p_type="trojan"; def_p="443" ;;
+            esac
 
             read -p "端口 (默认 $def_p): " PORT; PORT=${PORT:-$def_p}
             read -p "密码 (回车随机生成): " PASS; PASS=${PASS:-$(gen_pass)}
@@ -470,82 +432,38 @@ add_node() {
             if [[ "$c_choice" == "2" ]]; then
                 read -p "对应域名: " domain
                 find_certs "$domain"
-                [[ -z "$CERT_PATH" ]] && {
-                    echo -e "${RED}✘ 错误: 未在 $CERT_DIR/$domain 找到证书${PLAIN}"
-                    pause
-                    return
-                }
+                [[ -z "$CERT_PATH" ]] && { echo -e "${RED}✘ 错误: 未找到证书${PLAIN}"; pause; return; }
                 SNI_NAME="$domain"; ALLOW_INS="0"
             else
                 CERT_PATH="/etc/sing-box/${p_type}.crt"
                 KEY_PATH="/etc/sing-box/${p_type}.key"
-                [[ ! -f "$CERT_PATH" ]] && openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
-                    -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=apple.com" -days 3650 2>/dev/null
+                [[ ! -f "$CERT_PATH" ]] && openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout "$KEY_PATH" -out "$CERT_PATH" -subj "/CN=apple.com" -days 3650 2>/dev/null
                 SNI_NAME="apple.com"; ALLOW_INS="1"
             fi
 
-            # 协议特定 JSON 构造
-            if [[ "$p_type" == "tuic" ]]; then
-                jq --arg port "$PORT" \
-                   --arg uuid "$UUID" \
-                   --arg pass "$PASS" \
-                   --arg cert "$CERT_PATH" \
-                   --arg key "$KEY_PATH" \
-                   --arg tag "$TAG" \
-                   '.inbounds += [{
-                        "type": "tuic",
-                        "tag": $tag,
-                        "listen": "::",
-                        "listen_port": ($port|tonumber),
-                        "users": [{"uuid": $uuid, "password": $pass}],
-                        "tls": {
-                            "enabled": true,
-                            "certificate_path": $cert,
-                            "key_path": $key,
-                            "alpn": ["h3"]
-                        }
-                    }]' "$CONFIG_FILE" > tmp.json
-                LINK="tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INS&congestion_control=bbr#$TAG"
-            elif [[ "$p_type" == "hysteria2" ]]; then
-                jq --arg port "$PORT" \
-                   --arg pass "$PASS" \
-                   --arg cert "$CERT_PATH" \
-                   --arg key "$KEY_PATH" \
-                   --arg tag "$TAG" \
-                   '.inbounds += [{
-                        "type": "hysteria2",
-                        "tag": $tag,
-                        "listen": "::",
-                        "listen_port": ($port|tonumber),
-                        "users": [{"password": $pass}],
-                        "tls": {
-                            "enabled": true,
-                            "certificate_path": $cert,
-                            "key_path": $key
-                        }
-                    }]' "$CONFIG_FILE" > tmp.json
-                LINK="hysteria2://$PASS@$IP:$PORT?insecure=$ALLOW_INS&sni=$SNI_NAME#$TAG"
-            else # HTTPS / Trojan
-                jq --arg port "$PORT" \
-                   --arg pass "$PASS" \
-                   --arg cert "$CERT_PATH" \
-                   --arg key "$KEY_PATH" \
-                   --arg tag "$TAG" \
-                   --arg type "$p_type" \
-                   '.inbounds += [{
-                        "type": $type,
-                        "tag": $tag,
-                        "listen": "::",
-                        "listen_port": ($port|tonumber),
-                        "users": [{"password": $pass, "username": $pass}],
-                        "tls": {
-                            "enabled": true,
-                            "certificate_path": $cert,
-                            "key_path": $key
-                        }
-                    }]' "$CONFIG_FILE" > tmp.json
-                LINK="${p_type}://$PASS@$SNI_NAME:$PORT?security=tls&sni=$SNI_NAME&allowInsecure=$ALLOW_INS#$TAG"
-            fi
+            tls_json="{\"enabled\":true,\"certificate_path\":\"$CERT_PATH\",\"key_path\":\"$KEY_PATH\"}"
+            case "$p_type" in
+                tuic)
+                    usr_json="[{\"uuid\":\"$UUID\",\"password\":\"$PASS\"}]"
+                    tls_json="{\"enabled\":true,\"certificate_path\":\"$CERT_PATH\",\"key_path\":\"$KEY_PATH\",\"alpn\":[\"h3\"]}"
+                    LINK="tuic://$UUID:$PASS@$IP:$PORT?sni=$SNI_NAME&alpn=h3&allow_insecure=$ALLOW_INS&congestion_control=bbr#$TAG" ;;
+                hysteria2)
+                    usr_json="[{\"password\":\"$PASS\"}]"
+                    LINK="hysteria2://$PASS@$IP:$PORT?insecure=$ALLOW_INS&sni=$SNI_NAME#$TAG" ;;
+                trojan)
+                    usr_json="[{\"password\":\"$PASS\"}]"
+                    # 修正：使用 $IP 作为连接地址，SNI 放在参数里
+                    LINK="trojan://$PASS@$IP:$PORT?security=tls&sni=$SNI_NAME&allowInsecure=$ALLOW_INS#$TAG" ;;
+                http)
+                    usr_json="[{\"username\":\"$PASS\",\"password\":\"$PASS\"}]"
+                    # 修正：使用 $IP 作为连接地址，SNI 放在参数里
+                    LINK="https://$PASS:$PASS@$IP:$PORT?security=tls&sni=$SNI_NAME&allowInsecure=$ALLOW_INS#$TAG" ;;
+            esac
+
+            jq --arg port "$PORT" --arg type "$p_type" --arg tag "$TAG" \
+               --argjson users "$usr_json" --argjson tls "$tls_json" \
+               '.inbounds += [{"type":$type,"tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":$users,"tls":$tls}]' \
+               "$CONFIG_FILE" > tmp.json
             ;;
 
         4) # Shadowsocks
@@ -553,53 +471,23 @@ add_node() {
             PASS=$(openssl rand -base64 16)
             METHOD="2022-blake3-aes-128-gcm"
             TAG="ss-${PORT}"
-            jq --arg port "$PORT" \
-               --arg pass "$PASS" \
-               --arg method "$METHOD" \
-               --arg tag "$TAG" \
-               '.inbounds += [{
-                    "type": "shadowsocks",
-                    "tag": $tag,
-                    "listen": "::",
-                    "listen_port": ($port|tonumber),
-                    "method": $method,
-                    "password": $pass
-                }]' "$CONFIG_FILE" > tmp.json
+            jq --arg port "$PORT" --arg pass "$PASS" --arg method "$METHOD" --arg tag "$TAG" \
+               '.inbounds += [{"type":"shadowsocks","tag":$tag,"listen":"::","listen_port":($port|tonumber),"method":$method,"password":$pass}]' \
+               "$CONFIG_FILE" > tmp.json
             LINK="ss://$(echo -n "$METHOD:$PASS" | base64 -w 0)@$IP:$PORT#$TAG"
             ;;
 
         5) # VLESS + WS + CF
             read -p "域名: " domain
             find_certs "$domain"
-            [[ -z "$CERT_PATH" ]] && {
-                echo -e "${RED}✘ 错误: 证书不存在${PLAIN}"
-                pause
-                return
-            }
+            [[ -z "$CERT_PATH" ]] && { echo -e "${RED}✘ 错误: 证书不存在${PLAIN}"; pause; return; }
             read -p "端口 (默认 443): " PORT; PORT=${PORT:-443}
             read -p "路径 (默认 /video): " WSPATH; WSPATH=${WSPATH:-"/video"}
             TAG="vless-ws-${PORT}"
-            jq --arg port "$PORT" \
-               --arg uuid "$UUID" \
-               --arg path "$WSPATH" \
-               --arg domain "$domain" \
-               --arg tag "$TAG" \
-               --arg cert "$CERT_PATH" \
-               --arg key "$KEY_PATH" \
-               '.inbounds += [{
-                    "type": "vless",
-                    "tag": $tag,
-                    "listen": "::",
-                    "listen_port": ($port|tonumber),
-                    "users": [{"uuid": $uuid}],
-                    "transport": {"type": "ws", "path": $path},
-                    "tls": {
-                        "enabled": true,
-                        "server_name": $domain,
-                        "certificate_path": $cert,
-                        "key_path": $key
-                    }
-                }]' "$CONFIG_FILE" > tmp.json
+            
+            jq --arg port "$PORT" --arg uuid "$UUID" --arg path "$WSPATH" --arg domain "$domain" --arg tag "$TAG" --arg cert "$CERT_PATH" --arg key "$KEY_PATH" \
+               '.inbounds += [{"type":"vless","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"uuid":$uuid}],"transport":{"type":"ws","path":$path},"tls":{"enabled":true,"server_name":$domain,"certificate_path":$cert,"key_path":$key}}]' \
+               "$CONFIG_FILE" > tmp.json
             LINK="vless://$UUID@$domain:$PORT?encryption=none&security=tls&type=ws&path=${WSPATH//\//%2F}#$TAG"
             ;;
 
@@ -608,17 +496,9 @@ add_node() {
             read -p "用户: " USER
             read -p "密码: " PASS
             TAG="socks-${PORT}"
-            jq --arg port "$PORT" \
-               --arg user "$USER" \
-               --arg pass "$PASS" \
-               --arg tag "$TAG" \
-               '.inbounds += [{
-                    "type": "socks",
-                    "tag": $tag,
-                    "listen": "::",
-                    "listen_port": ($port|tonumber),
-                    "users": [{"username": $user, "password": $pass}]
-                }]' "$CONFIG_FILE" > tmp.json
+            jq --arg port "$PORT" --arg user "$USER" --arg pass "$PASS" --arg tag "$TAG" \
+               '.inbounds += [{"type":"socks","tag":$tag,"listen":"::","listen_port":($port|tonumber),"users":[{"username":$user,"password":$pass}]}]' \
+               "$CONFIG_FILE" > tmp.json
             LINK="socks5://$USER:$PASS@$IP:$PORT#$TAG"
             ;;
     esac
@@ -627,8 +507,7 @@ add_node() {
     if [[ -f "tmp.json" ]]; then
         if save_and_restart; then
             [[ -n "$LINK" ]] && echo "$LINK" > "$LINK_DIR/${TAG}.link"
-            echo -e "${GREEN}✔ 节点添加成功！${PLAIN}"
-            echo -e "分享链接: ${BLUE}$LINK${PLAIN}"
+            echo -e "${GREEN}✔ 节点添加成功！${PLAIN}\n分享链接: ${BLUE}$LINK${PLAIN}"
         fi
         rm -f tmp.json
     fi
@@ -1310,8 +1189,8 @@ while true; do
     echo -e " ${GREEN}11.${PLAIN} 更改配置 / 删除"
     echo -e " ${GREEN}12.${PLAIN} 安装官方WARP并自动对接Sing-box"
     echo -e "-----------------------------------------------"
-    # 将控制命令并排放在底部，使用独立的高位编号防止误触
-    echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${YELLOW}[0]${PLAIN} 退出"
+    #底部菜单
+    echo -e " ${GREEN}[88]${PLAIN} 启动  ${GREEN}[99]${PLAIN} 停止  ${GREEN}[66]${PLAIN} 重启  ${RED}[77]${PLAIN} 卸载  ${RED}[0]${PLAIN} 退出"
     echo -e "==============================================="
     read -p " 请输入对应数字选择: " choice
     
@@ -1366,4 +1245,3 @@ while true; do
             ;;
     esac
 done
-
