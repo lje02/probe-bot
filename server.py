@@ -12,12 +12,14 @@
 """
 
 import asyncio
+import hmac
 import html
 import time
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -377,6 +379,22 @@ async def monitor_loop():
 
 
 # ---------------------------------------------------------------------------
+# 上报数据的校验模型 —— 字段缺失/类型不对时，返回清晰的 422 而不是裸 500
+# ---------------------------------------------------------------------------
+class ReportPayload(BaseModel):
+    node_id: str
+    name: str = ""
+    cpu: float
+    mem: float
+    disk: float
+    net_up: float
+    net_down: float
+    net_sent_total: float
+    net_recv_total: float
+    uptime: float
+
+
+# ---------------------------------------------------------------------------
 # FastAPI 部分：接收 Agent 上报
 # ---------------------------------------------------------------------------
 @asynccontextmanager
@@ -419,24 +437,21 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/report")
-async def report(request: Request, authorization: str = Header(None)):
-    if authorization != f"Bearer {config.AUTH_TOKEN}":
+async def report(payload: ReportPayload, authorization: str = Header(None)):
+    expected = f"Bearer {config.AUTH_TOKEN}"
+    if not authorization or not hmac.compare_digest(authorization, expected):
         raise HTTPException(status_code=401, detail="invalid token")
 
-    data = await request.json()
-    node_id = data["node_id"]
-
-    prev = NODES.get(node_id, {})
-    NODES[node_id] = {
-        "name": data.get("name", node_id),
-        "cpu": data["cpu"],
-        "mem": data["mem"],
-        "disk": data["disk"],
-        "net_up": data["net_up"],
-        "net_down": data["net_down"],
-        "net_sent_total": data["net_sent_total"],
-        "net_recv_total": data["net_recv_total"],
-        "uptime": data["uptime"],
+    NODES[payload.node_id] = {
+        "name": payload.name or payload.node_id,
+        "cpu": payload.cpu,
+        "mem": payload.mem,
+        "disk": payload.disk,
+        "net_up": payload.net_up,
+        "net_down": payload.net_down,
+        "net_sent_total": payload.net_sent_total,
+        "net_recv_total": payload.net_recv_total,
+        "uptime": payload.uptime,
         "last_seen": time.time(),
     }
     return {"ok": True}
