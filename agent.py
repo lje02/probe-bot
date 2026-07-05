@@ -25,7 +25,7 @@ def _require(name: str) -> str:
     return val
 
 
-# 配置从 .env 读取，见 .env.example
+# 配置从 .env 读取，见 .env.agent.example
 # SERVER_URL 必须是 https:// 开头（除非你走的是 Tailscale/WireGuard 内网，见 README 安全说明）
 SERVER_URL = _require("PROBE_SERVER_URL")
 AUTH_TOKEN = _require("PROBE_AUTH_TOKEN")
@@ -33,7 +33,9 @@ NODE_ID = _require("PROBE_NODE_ID")
 NODE_NAME = os.environ.get("PROBE_NODE_NAME", NODE_ID)
 REPORT_INTERVAL_SEC = int(os.environ.get("PROBE_REPORT_INTERVAL_SEC", "15"))
 
-if not SERVER_URL.startswith("https://") and "PROBE_ALLOW_HTTP" not in os.environ:
+ALLOW_HTTP = os.environ.get("PROBE_ALLOW_HTTP", "").strip().lower() in ("1", "true", "yes")
+
+if not SERVER_URL.startswith("https://") and not ALLOW_HTTP:
     sys.exit(
         "[安全警告] SERVER_URL 不是 https:// 开头。\n"
         "明文 HTTP 会导致 AUTH_TOKEN 和系统数据被中间人窃听/篡改。\n"
@@ -79,14 +81,18 @@ def main():
         }
 
         try:
-            session.post(
+            resp = session.post(
                 SERVER_URL,
                 json=payload,
                 headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
                 timeout=5,
             )
+            if resp.status_code == 401:
+                print("[error] 上报被拒绝(401): AUTH_TOKEN 和服务端不一致，请检查 .env")
+            elif resp.status_code >= 400:
+                print(f"[warn] 服务端返回异常状态码 {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
-            print(f"[warn] 上报失败: {e}")
+            print(f"[warn] 上报失败(网络/连接问题): {e}")
 
         time.sleep(REPORT_INTERVAL_SEC)
 
