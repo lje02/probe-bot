@@ -40,5 +40,9 @@ MEM_THRESHOLD = float(os.environ.get("PROBE_MEM_THRESHOLD", "90"))
 # 超过这么多秒没收到某节点的上报，就判定为离线
 OFFLINE_THRESHOLD_SEC = int(os.environ.get("PROBE_OFFLINE_THRESHOLD_SEC", "90"))
 
+# --- 长期离线自动清理 ---
+# 超过这么多天没上报，就自动从列表里摘除（避免堆积废弃节点），默认 7 天
+STALE_REMOVE_SEC = int(os.environ.get("PROBE_STALE_REMOVE_DAYS", "7")) * 86400
+
 # --- 后台巡检间隔 ---
 CHECK_INTERVAL_SEC = int(os.environ.get("PROBE_CHECK_INTERVAL_SEC", "15"))
