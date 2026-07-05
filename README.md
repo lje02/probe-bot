@@ -15,7 +15,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/lje02/probe-bot.git
+git clone https://github.com/<your-username>/probe-bot.git
 cd probe-bot
 ```
 
@@ -45,13 +45,12 @@ probe-bot/
 ## 第二步：部署服务端（找一台稳定的机器/VPS）
 
 ```bash
-cp .env.server.example .env
-nano .env   # 填入 BOT_TOKEN / CHAT_ID / AUTH_TOKEN(随机字符串，例如 openssl rand -hex 16 生成)
-
 sudo bash install_server.sh
 ```
 
-这一个脚本会自动做完：建虚拟环境、装依赖、生成 systemd 服务、限制资源占用、启用开机自启并启动。跑完直接看 `systemctl status probe-server` 确认状态。
+首次运行会交互式问你几项（Bot Token、Chat ID、鉴权 Token——留空可自动生成、监听地址），填完自动生成 `.env`、建虚拟环境、装依赖、配置 systemd、限制资源、开机自启并启动。
+
+如果想跳过交互，直接编辑好 `.env.server.example` 复制为 `.env` 再运行脚本也可以，脚本检测到 `.env` 已存在就不会再问。
 
 `.env` 文件包含密钥，注意：
 - 不要提交到 git（已在 `.gitignore` 里）
