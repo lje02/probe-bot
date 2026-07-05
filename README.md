@@ -1,11 +1,30 @@
 # Telegram 探针机器人
 
-多节点服务器监控，实时状态 + 异常报警，全部通过 Telegram 查看，不做 Web 面板，不存历史数据。
+多节点服务器监控 Bot：多台服务器的状态集中上报，全部通过 Telegram 查看和操作——不需要 Web 面板，不需要额外的客户端。
+
+## 功能
+
+- 🖥 **多节点集中监控** — 每台服务器装一个轻量 Agent，数据汇总到一个 Bot 里查看
+- 🔘 **按钮式交互控制台** — `/start` 弹出 inline 按钮菜单，点击导航，不用死记命令
+- 🔥 **自动报警** — 节点离线、CPU/内存超阈值时主动推送，无需手动查询
+- 🗑 **节点摘除** — 手动摘除（二次确认）+ 长期离线自动清理，列表不会越堆越乱
+- 🔒 **内网加密传输** — 走 WireGuard 隧道，token 鉴权，避免明文暴露公网
+- ⚙️ **一键部署** — 安装脚本自动配 systemd 常驻服务，异常退出自动重启
+- 📉 **低资源占用** — systemd 资源配额限制，探针本身不会跟业务进程抢资源
+
+## 快速开始
+
+```bash
+git clone https://github.com/<your-username>/probe-bot.git
+cd probe-bot
+```
+
+接下来分「服务端」「Agent」两部分部署，跳到下面对应章节。
 
 ## 目录结构
 
 ```
-probe_bot/
+probe-bot/
 ├── server.py                # 服务端(收上报 + 判断报警 + Telegram Bot)
 ├── config.py                # 服务端配置(从 .env 读取)
 ├── install_server.sh        # 服务端一键安装(建venv+装依赖+配systemd+限资源)
@@ -26,7 +45,6 @@ probe_bot/
 ## 第二步：部署服务端（找一台稳定的机器/VPS）
 
 ```bash
-cd probe_bot
 cp .env.server.example .env
 nano .env   # 填入 BOT_TOKEN / CHAT_ID / AUTH_TOKEN(随机字符串，例如 openssl rand -hex 16 生成)
 
@@ -105,9 +123,11 @@ Agent 端 `.env` 里 `PROBE_SERVER_URL` 填 `https://probe.yourdomain.com/report
 
 ## 第三步：在每台被监控的服务器上部署 Agent
 
-把整个 `probe_bot` 目录（至少 `agent.py` / `install_agent.sh` / `requirements_agent.txt` / `.env.agent.example`）拷贝过去：
+在每台要监控的服务器上都 clone 一份：
 
 ```bash
+git clone https://github.com/<your-username>/probe-bot.git
+cd probe-bot
 sudo bash install_agent.sh
 ```
 
@@ -174,3 +194,18 @@ sudo systemctl restart probe-server   # 或 probe-agent
 - 历史数据存储 + 曲线图
 - 多用户/多群权限控制
 - 流量超额提醒（比如月流量跑到 80% 时提醒）
+
+## 更新代码
+
+```bash
+cd probe-bot
+git pull
+sudo systemctl restart probe-server   # 服务端机器上执行
+sudo systemctl restart probe-agent    # 每台 Agent 机器上执行
+```
+
+`.env` 和 `.venv` 都在 `.gitignore` 里，`git pull` 不会动到你的配置和依赖环境。如果 `requirements_*.txt` 有变化，记得重新跑一下对应的 `pip install`。
+
+## License
+
+MIT（占位，按你实际情况改成想用的协议，或删掉这节）
