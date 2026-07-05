@@ -49,6 +49,7 @@ cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=Probe Bot Agent
 After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
