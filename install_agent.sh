@@ -80,6 +80,16 @@ fi
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/requirements_agent.txt"
 
+# 验证关键依赖真的装上了（曾经出现过 pip 表面成功、实际某个包缺失的情况）
+if ! "$INSTALL_DIR/.venv/bin/python" -c "import psutil, requests, dotenv" 2>/dev/null; then
+  echo ""
+  echo "!! 依赖安装校验失败，虚拟环境里缺少必要的包。"
+  echo "   手动排查: $INSTALL_DIR/.venv/bin/pip install -r $INSTALL_DIR/requirements_agent.txt"
+  echo "   如果还不行，试试删掉虚拟环境重建: rm -rf $INSTALL_DIR/.venv && sudo bash install_agent.sh"
+  exit 1
+fi
+echo "==> 依赖校验通过"
+
 # 3. 生成 systemd 单元文件
 # Agent 只是个采集脚本，资源限制给得比服务端更紧：
 #   CPUQuota=5%   平时几乎不占 CPU，采集是瞬时的
