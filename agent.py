@@ -52,6 +52,7 @@ def collect():
 
 
 def main():
+    session = requests.Session()  # 复用 TCP 连接，减少每次上报的开销
     prev_net = psutil.net_io_counters()
     prev_time = time.time()
 
@@ -78,7 +79,7 @@ def main():
         }
 
         try:
-            requests.post(
+            session.post(
                 SERVER_URL,
                 json=payload,
                 headers={"Authorization": f"Bearer {AUTH_TOKEN}"},
