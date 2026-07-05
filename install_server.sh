@@ -66,6 +66,16 @@ fi
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/requirements_server.txt"
 
+# 验证关键依赖真的装上了（曾经出现过 pip 表面成功、实际某个包缺失的情况）
+if ! "$INSTALL_DIR/.venv/bin/python" -c "import fastapi, uvicorn, telegram, dotenv" 2>/dev/null; then
+  echo ""
+  echo "!! 依赖安装校验失败，虚拟环境里缺少必要的包。"
+  echo "   手动排查: $INSTALL_DIR/.venv/bin/pip install -r $INSTALL_DIR/requirements_server.txt"
+  echo "   如果还不行，试试删掉虚拟环境重建: rm -rf $INSTALL_DIR/.venv && sudo bash install_server.sh"
+  exit 1
+fi
+echo "==> 依赖校验通过"
+
 # 3. 生成 systemd 单元文件
 # 资源限制说明:
 #   Nice=19            调度优先级降到最低，不和业务进程抢 CPU
