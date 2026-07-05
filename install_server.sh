@@ -15,18 +15,43 @@ RUN_USER="${SUDO_USER:-$(whoami)}"
 echo "==> 安装目录: $INSTALL_DIR"
 echo "==> 运行用户: $RUN_USER"
 
-# 1. 检查 .env
+# 1. 检查/生成 .env，缺哪个交互式问哪个
 if [ ! -f "$INSTALL_DIR/.env" ]; then
-  if [ -f "$INSTALL_DIR/.env.server.example" ]; then
-    cp "$INSTALL_DIR/.env.server.example" "$INSTALL_DIR/.env"
-    echo ""
-    echo "!! 已生成 .env，请先编辑填好 BOT_TOKEN / CHAT_ID / AUTH_TOKEN，再重新运行本脚本:"
-    echo "   nano $INSTALL_DIR/.env"
-    exit 1
-  else
-    echo "找不到 .env 或 .env.server.example，无法继续。"
+  if [ ! -f "$INSTALL_DIR/.env.server.example" ]; then
+    echo "找不到 .env.server.example，无法继续。"
     exit 1
   fi
+  cp "$INSTALL_DIR/.env.server.example" "$INSTALL_DIR/.env"
+
+  echo ""
+  echo "首次安装，交互式填写几项配置（直接回车使用方括号里的默认值）："
+  read -rp "Telegram Bot Token（从 @BotFather 获取）: " bot_token
+  read -rp "你自己的 Chat ID（从 @userinfobot 获取）: " chat_id
+  read -rp "鉴权 Token（留空则自动生成随机值，Agent 上报时要用同一个）: " auth_token
+  if [ -z "$auth_token" ]; then
+    auth_token=$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | xxd -p)
+    echo "已自动生成鉴权 Token: $auth_token"
+  fi
+  read -rp "服务监听地址（建议填 WireGuard 内网 IP，如 10.0.0.1）[127.0.0.1]: " server_host
+  server_host=${server_host:-127.0.0.1}
+
+  if [ -z "$bot_token" ] || [ -z "$chat_id" ]; then
+    rm -f "$INSTALL_DIR/.env"
+    echo ""
+    echo "!! BOT_TOKEN 和 CHAT_ID 是必填项，不能留空，本次配置已取消。"
+    echo "   请重新运行 sudo bash install_server.sh"
+    exit 1
+  fi
+
+  sed -i "s#^PROBE_BOT_TOKEN=.*#PROBE_BOT_TOKEN=${bot_token}#" "$INSTALL_DIR/.env"
+  sed -i "s#^PROBE_CHAT_ID=.*#PROBE_CHAT_ID=${chat_id}#" "$INSTALL_DIR/.env"
+  sed -i "s#^PROBE_AUTH_TOKEN=.*#PROBE_AUTH_TOKEN=${auth_token}#" "$INSTALL_DIR/.env"
+  sed -i "s#^PROBE_SERVER_HOST=.*#PROBE_SERVER_HOST=${server_host}#" "$INSTALL_DIR/.env"
+
+  echo ""
+  echo "配置已写入 $INSTALL_DIR/.env"
+  echo "记下这个鉴权 Token，等下配置 Agent 时要用: $auth_token"
+  echo ""
 fi
 chmod 600 "$INSTALL_DIR/.env"
 chown "$RUN_USER" "$INSTALL_DIR/.env"
