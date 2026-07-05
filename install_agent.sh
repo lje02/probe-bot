@@ -27,6 +27,14 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   read -rp "节点显示名称（如 香港-01）[默认同节点ID]: " node_name
   node_name=${node_name:-$node_id}
 
+  if [ -z "$auth_token" ] || [ -z "$node_id" ]; then
+    rm -f "$INSTALL_DIR/.env"
+    echo ""
+    echo "!! 鉴权 Token 和 节点 ID 是必填项，不能留空，本次配置已取消。"
+    echo "   请重新运行 sudo bash install_agent.sh"
+    exit 1
+  fi
+
   sed -i "s#^PROBE_SERVER_URL=.*#PROBE_SERVER_URL=${server_url}#" "$INSTALL_DIR/.env"
   sed -i "s#^PROBE_AUTH_TOKEN=.*#PROBE_AUTH_TOKEN=${auth_token}#" "$INSTALL_DIR/.env"
   sed -i "s#^PROBE_NODE_ID=.*#PROBE_NODE_ID=${node_id}#" "$INSTALL_DIR/.env"
