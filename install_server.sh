@@ -57,8 +57,12 @@ chmod 600 "$INSTALL_DIR/.env"
 chown "$RUN_USER" "$INSTALL_DIR/.env"
 
 # 2. 建虚拟环境 + 装依赖（虚拟环境避免污染系统 Python，也方便控制版本）
-echo "==> 创建虚拟环境..."
-python3 -m venv "$INSTALL_DIR/.venv"
+if [ ! -d "$INSTALL_DIR/.venv" ]; then
+  echo "==> 创建虚拟环境..."
+  python3 -m venv "$INSTALL_DIR/.venv"
+else
+  echo "==> 虚拟环境已存在，跳过创建"
+fi
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/requirements_server.txt"
 
