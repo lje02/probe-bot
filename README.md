@@ -7,10 +7,14 @@
 ```
 probe_bot/
 ├── server.py                # 服务端(收上报 + 判断报警 + Telegram Bot)
-├── config.py                # 服务端配置(需要修改)
+├── config.py                # 服务端配置(从 .env 读取)
+├── install_server.sh        # 服务端一键安装(建venv+装依赖+配systemd+限资源)
 ├── requirements_server.txt
+├── .env.server.example
 ├── agent.py                 # Agent(装在每台被监控机器上)
+├── install_agent.sh         # Agent一键安装(交互式填配置+配systemd+限资源)
 ├── requirements_agent.txt
+├── .env.agent.example
 └── README.md
 ```
 
@@ -23,41 +27,18 @@ probe_bot/
 
 ```bash
 cd probe_bot
-pip install -r requirements_server.txt --break-system-packages
-
 cp .env.server.example .env
-# 编辑 .env，填入 BOT_TOKEN / CHAT_ID / AUTH_TOKEN
-# AUTH_TOKEN 随便生成一个随机字符串，例如: openssl rand -hex 16
+nano .env   # 填入 BOT_TOKEN / CHAT_ID / AUTH_TOKEN(随机字符串，例如 openssl rand -hex 16 生成)
 
-python server.py
+sudo bash install_server.sh
 ```
+
+这一个脚本会自动做完：建虚拟环境、装依赖、生成 systemd 服务、限制资源占用、启用开机自启并启动。跑完直接看 `systemctl status probe-server` 确认状态。
 
 `.env` 文件包含密钥，注意：
-- 不要把它提交到 git（建议在 `.gitignore` 里加一行 `.env`）
+- 不要提交到 git（已在 `.gitignore` 里）
 - 不要截图分享给别人
-- 文件权限建议设为仅自己可读：`chmod 600 .env`
-
-建议用 systemd 常驻（避免关终端就断）：
-
-```ini
-# /etc/systemd/system/probe-server.service
-[Unit]
-Description=Probe Bot Server
-After=network.target
-
-[Service]
-WorkingDirectory=/path/to/probe_bot
-ExecStart=/usr/bin/python3 server.py
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now probe-server
-```
+- 脚本已自动设置权限为仅自己可读（`chmod 600`）
 
 `config.py` 里 `PROBE_SERVER_HOST` 默认兜底是 `127.0.0.1`，但你实际部署时要按下面"安全部署"里的说明，改成 WireGuard 网卡的内网 IP，Agent 才能连上。
 
@@ -124,36 +105,68 @@ Agent 端 `.env` 里 `PROBE_SERVER_URL` 填 `https://probe.yourdomain.com/report
 
 ## 第三步：在每台被监控的服务器上部署 Agent
 
-把 `agent.py` 和 `requirements_agent.txt` 拷贝过去：
+把整个 `probe_bot` 目录（至少 `agent.py` / `install_agent.sh` / `requirements_agent.txt` / `.env.agent.example`）拷贝过去：
 
 ```bash
-pip install -r requirements_agent.txt --break-system-packages
-
-cp .env.agent.example .env
-# 编辑 .env：
-#   PROBE_SERVER_URL  = 服务端地址(见下面"安全部署"，必须是 https:// 或 Tailscale 内网)
-#   PROBE_AUTH_TOKEN  = 和服务端 .env 里的 PROBE_AUTH_TOKEN 一致
-#   PROBE_NODE_ID     = 每台机器唯一，比如 hk-01
-#   PROBE_NODE_NAME   = 显示名字，比如 香港-01
-
-python agent.py
+sudo bash install_agent.sh
 ```
 
-同样建议 systemd 常驻，把上面 service 文件的 `ExecStart` 换成 `agent.py` 即可，每台机器装一份，`NODE_ID` 记得改成不一样的。
+首次运行会交互式问你几项（服务端地址、Token、节点 ID/名称），填完自动建虚拟环境、装依赖、配置 systemd、限制资源、开机自启并启动。每台机器跑一次，注意 **节点 ID 每台要填不一样的**（比如 hk-01 / jp-02）。
+
+如果想跳过交互，直接编辑好 `.env.agent.example` 复制为 `.env` 再运行脚本也可以，脚本检测到 `.env` 已存在就不会再问。
 
 ## 使用
 
-在和你的 Bot 的私聊窗口里：
+私聊你的 Bot，发 `/start`（或 `/menu`）会弹出一个按钮控制台：
 
-- `/status` — 查看所有节点实时状态一览
-- `/node 香港-01` — 查看单个节点详情
-- `/traffic` — 查看各节点累计流量
+```
+🛰 探针机器人控制台
+请选择要查看的内容：
+
+[📊 节点状态]  [📈 流量统计]
+[🗂 节点列表]  [ℹ️ 帮助]
+```
+
+- 点 **📊 节点状态** — 所有节点一览，带 🔄刷新 / ⬅️返回 按钮，原地更新不刷屏
+- 点 **🗂 节点列表** — 每个节点一个按钮（🟢/🔴 标在线状态），点进去看该节点详情
+- 点 **📈 流量统计** — 各节点累计流量
+- 节点详情页有 **🗑 摘除节点** 按钮，点了会要求二次确认，防止手滑误删
+- 报警推送消息下面也带一个 **📊 查看状态** 按钮，点一下直接跳到状态面板
+
+摘除/清理都只是从"当前显示列表"里移除，不会影响 Agent 本身运行——如果被摘除的节点后续又上报了数据，会自动重新出现在列表里。长期离线（默认 7 天，`.env` 里 `PROBE_STALE_REMOVE_DAYS` 可调）的节点也会自动清理，不用手动维护。
+
+依然保留了命令行式用法（想直接打字也行）：
+
+- `/status` — 节点状态
+- `/node 香港-01` — 指定节点详情（不带参数会弹出节点按钮列表）
+- `/traffic` — 流量统计
+- `/remove 香港-01` — 摘除节点（会要求二次确认）
 
 出现异常时 Bot 会**主动**推送消息给你，无需查询：
 
 - 🔴 节点失联（默认 90 秒无上报）
-- 🔥 CPU / 内存超过 90%（可在 `config.py` 改阈值）
+- 🔥 CPU / 内存超过 90%（可在 `.env` 改阈值）
 - 🟢 / ✅ 恢复正常时也会推送一条
+
+## 资源占用控制
+
+两个安装脚本生成的 systemd 服务都自带资源限制，不会因为探针本身把机器资源占满：
+
+| 限制项 | Agent | 服务端 | 说明 |
+|---|---|---|---|
+| `Nice=19` | ✅ | ✅ | 调度优先级降到最低，业务进程抢 CPU 时优先让着它们 |
+| `IOSchedulingClass=idle` | ✅ | ✅ | 磁盘 IO 优先级最低 |
+| `CPUQuota` | 5% | 20% | 最多用多少个 CPU 核心的百分比 |
+| `MemoryMax` | 50M | 150M | 超过直接被系统 OOM kill，防止意外内存泄漏拖垮整机 |
+
+Agent 本身也很轻：只用 `psutil` 采集数据、`requests.Session()` 复用连接上报，每 15 秒跑一次，正常情况下 CPU 占用几乎为 0，内存占用几 MB。
+
+如果嫌默认限制太紧（比如报警显示服务被 OOM kill 了），改 `/etc/systemd/system/probe-server.service`（或 `probe-agent.service`）里的 `CPUQuota`/`MemoryMax` 数值，然后：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart probe-server   # 或 probe-agent
+```
 
 ## 后续可扩展方向（现在没做，想要再加）
 
