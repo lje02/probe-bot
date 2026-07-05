@@ -8,17 +8,38 @@
   4. 建议配合 systemd 常驻运行（见 README）
 """
 
+import os
+import sys
 import time
 import requests
 import psutil
+from dotenv import load_dotenv
 
-# ------------------- 按需修改 -------------------
-SERVER_URL = "http://你的服务端IP或域名:8000/report"
-AUTH_TOKEN = "要和服务端 config.py 里的 AUTH_TOKEN 保持一致"
-NODE_ID = "hk-01"          # 每台机器唯一，比如 hk-01 / jp-02
-NODE_NAME = "香港-01"       # 显示在 Telegram 里的名字
-REPORT_INTERVAL_SEC = 15   # 上报间隔
-# -------------------------------------------------
+load_dotenv()  # 读取同目录下的 .env
+
+
+def _require(name: str) -> str:
+    val = os.environ.get(name)
+    if not val:
+        sys.exit(f"[配置错误] 缺少环境变量 {name}，请检查 .env 文件")
+    return val
+
+
+# 配置从 .env 读取，见 .env.example
+# SERVER_URL 必须是 https:// 开头（除非你走的是 Tailscale/WireGuard 内网，见 README 安全说明）
+SERVER_URL = _require("PROBE_SERVER_URL")
+AUTH_TOKEN = _require("PROBE_AUTH_TOKEN")
+NODE_ID = _require("PROBE_NODE_ID")
+NODE_NAME = os.environ.get("PROBE_NODE_NAME", NODE_ID)
+REPORT_INTERVAL_SEC = int(os.environ.get("PROBE_REPORT_INTERVAL_SEC", "15"))
+
+if not SERVER_URL.startswith("https://") and "PROBE_ALLOW_HTTP" not in os.environ:
+    sys.exit(
+        "[安全警告] SERVER_URL 不是 https:// 开头。\n"
+        "明文 HTTP 会导致 AUTH_TOKEN 和系统数据被中间人窃听/篡改。\n"
+        "请给服务端配置 Nginx+HTTPS，或改用 Tailscale/WireGuard 内网地址(见 README)。\n"
+        "如果你清楚风险、确实只在私有内网使用，可设置环境变量 PROBE_ALLOW_HTTP=1 跳过此检查。"
+    )
 
 
 def collect():
