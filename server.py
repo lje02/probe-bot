@@ -204,4 +204,4 @@ async def report(request: Request, authorization: str = Header(None)):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=config.SERVER_PORT)
+    uvicorn.run(app, host=config.SERVER_HOST, port=config.SERVER_PORT)
