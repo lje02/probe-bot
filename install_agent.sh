@@ -27,6 +27,13 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
   read -rp "节点显示名称（如 香港-01）[默认同节点ID]: " node_name
   node_name=${node_name:-$node_id}
 
+  echo ""
+  echo "上面的服务端地址是走 WireGuard/私有内网，还是走公网？"
+  echo "  - 私有内网(WireGuard/Tailscale等): 流量本身已加密，用 http:// 就行"
+  echo "  - 公网: 必须用 https://，否则鉴权 Token 会明文暴露"
+  read -rp "走的是私有内网吗？[Y/n]: " use_private_net
+  use_private_net=${use_private_net:-Y}
+
   if [ -z "$auth_token" ] || [ -z "$node_id" ]; then
     rm -f "$INSTALL_DIR/.env"
     echo ""
@@ -35,10 +42,30 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
     exit 1
   fi
 
+  if [[ "$use_private_net" =~ ^[Yy]$ ]]; then
+    allow_http=1
+    echo "==> 已设置 PROBE_ALLOW_HTTP=1（跳过 agent.py 里的强制 https 检查）"
+  else
+    allow_http=0
+    if [[ "$server_url" != https://* ]]; then
+      echo ""
+      echo "!! 你选择了走公网，但服务端地址不是 https:// 开头，Agent 启动时会被拒绝。"
+      echo "   请给服务端配置好 Nginx+HTTPS，并把上面的地址改成 https://，再重新运行本脚本。"
+      rm -f "$INSTALL_DIR/.env"
+      exit 1
+    fi
+    echo "==> 未设置 PROBE_ALLOW_HTTP，agent.py 会强制要求 https://"
+  fi
+
   sed -i "s#^PROBE_SERVER_URL=.*#PROBE_SERVER_URL=${server_url}#" "$INSTALL_DIR/.env"
   sed -i "s#^PROBE_AUTH_TOKEN=.*#PROBE_AUTH_TOKEN=${auth_token}#" "$INSTALL_DIR/.env"
   sed -i "s#^PROBE_NODE_ID=.*#PROBE_NODE_ID=${node_id}#" "$INSTALL_DIR/.env"
   sed -i "s#^PROBE_NODE_NAME=.*#PROBE_NODE_NAME=${node_name}#" "$INSTALL_DIR/.env"
+  if [ "$allow_http" = "1" ]; then
+    sed -i "s|^# *PROBE_ALLOW_HTTP=.*|PROBE_ALLOW_HTTP=1|; s|^PROBE_ALLOW_HTTP=.*|PROBE_ALLOW_HTTP=1|" "$INSTALL_DIR/.env"
+  else
+    sed -i "/^PROBE_ALLOW_HTTP=/d" "$INSTALL_DIR/.env"
+  fi
 fi
 chmod 600 "$INSTALL_DIR/.env"
 chown "$RUN_USER" "$INSTALL_DIR/.env"
