@@ -13,6 +13,9 @@
 - 📉 **低资源占用** — systemd 资源配额限制，探针本身不会跟业务进程抢资源
 
 ## 快速开始
+# git安装
+
+sudo apt update && sudo apt install -y git
 
 ```bash
 git clone https://github.com/lje02/probe-bot.git
