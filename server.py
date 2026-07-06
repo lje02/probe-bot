@@ -109,10 +109,22 @@ def build_traffic_text() -> str:
 def build_node_text(node_id: str) -> str:
     n = NODES[node_id]
     online = time.time() - n["last_seen"] < config.OFFLINE_THRESHOLD_SEC
+
+    per_core = n.get("cpu_per_core") or []
+    core_block = ""
+    if per_core:
+        core_strs = [f"核{i + 1} {v:.0f}%" for i, v in enumerate(per_core)]
+        rows = ["　".join(core_strs[i:i + 4]) for i in range(0, len(core_strs), 4)]
+        core_block = "\n" + "\n".join(rows)
+
+    load1, load5, load15 = n.get("load1", 0.0), n.get("load5", 0.0), n.get("load15", 0.0)
+    load_line = f"负载　　{load1:.2f} / {load5:.2f} / {load15:.2f}　(1/5/15分钟)\n" if per_core else ""
+
     return (
         f"<b>🖥 {html.escape(n['name'])}</b>\n\n"
         f"状态　　{'🟢 在线' if online else '🔴 离线'}\n"
-        f"CPU　　 {n['cpu']:.1f}%\n"
+        f"CPU　　 {n['cpu']:.1f}%{core_block}\n"
+        f"{load_line}"
         f"内存　　{n['mem']:.1f}%\n"
         f"磁盘　　{n['disk']:.1f}%\n"
         f"上行　　{fmt_bytes_per_sec(n['net_up'])}\n"
@@ -427,6 +439,7 @@ class ReportPayload(BaseModel):
     node_id: str
     name: str = ""
     cpu: float
+    cpu_per_core: list[float] = []
     mem: float
     disk: float
     net_up: float
@@ -434,6 +447,9 @@ class ReportPayload(BaseModel):
     net_sent_total: float
     net_recv_total: float
     uptime: float
+    load1: float = 0.0
+    load5: float = 0.0
+    load15: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +503,7 @@ async def report(payload: ReportPayload, authorization: str = Header(None)):
     NODES[payload.node_id] = {
         "name": payload.name or payload.node_id,
         "cpu": payload.cpu,
+        "cpu_per_core": payload.cpu_per_core,
         "mem": payload.mem,
         "disk": payload.disk,
         "net_up": payload.net_up,
@@ -494,6 +511,9 @@ async def report(payload: ReportPayload, authorization: str = Header(None)):
         "net_sent_total": payload.net_sent_total,
         "net_recv_total": payload.net_recv_total,
         "uptime": payload.uptime,
+        "load1": payload.load1,
+        "load5": payload.load5,
+        "load15": payload.load15,
         "last_seen": time.time(),
     }
     return {"ok": True}
