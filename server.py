@@ -40,6 +40,14 @@ NODES: dict[str, dict] = {}
 # 记录每个节点当前是否处于"已报警"状态，避免同一问题反复刷屏
 ALERT_STATE: dict[str, dict] = {}
 
+# 待"立即刷新"的节点集合 —— 点刷新按钮时把 node_id 放进来，
+# Agent 每隔几秒会主动来问一次"要不要立刻上报"，问到了就会被取走（一次性）
+PENDING_REFRESH: set[str] = set()
+
+
+def request_refresh(node_id: str):
+    PENDING_REFRESH.add(node_id)
+
 
 def fmt_bytes_per_sec(v: float) -> str:
     if v > 1024 * 1024:
@@ -148,7 +156,7 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 def status_view_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 刷新", callback_data="menu:status"),
+            InlineKeyboardButton("🔄 刷新", callback_data="force:status"),
             InlineKeyboardButton("⬅️ 返回", callback_data="menu:main"),
         ],
     ])
@@ -157,7 +165,7 @@ def status_view_kb() -> InlineKeyboardMarkup:
 def traffic_view_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 刷新", callback_data="menu:traffic"),
+            InlineKeyboardButton("🔄 刷新", callback_data="force:traffic"),
             InlineKeyboardButton("⬅️ 返回", callback_data="menu:main"),
         ],
     ])
@@ -182,7 +190,7 @@ def nodes_list_kb() -> InlineKeyboardMarkup:
 def node_detail_kb(node_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔄 刷新", callback_data=f"node:{node_id}"),
+            InlineKeyboardButton("🔄 刷新", callback_data=f"force:node:{node_id}"),
             InlineKeyboardButton("⬅️ 返回列表", callback_data="menu:nodes"),
         ],
         [
@@ -203,6 +211,7 @@ def remove_confirm_kb(node_id: str) -> InlineKeyboardMarkup:
 def remove_node(node_id: str):
     NODES.pop(node_id, None)
     ALERT_STATE.pop(node_id, None)
+    PENDING_REFRESH.discard(node_id)
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +336,39 @@ async def on_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
             reply_markup=nodes_list_kb(),
         )
+    elif data == "force:status":
+        if NODES:
+            await query.edit_message_text("⏳ 正在请求节点立即上报，请稍候…")
+            for nid in NODES:
+                request_refresh(nid)
+            await asyncio.sleep(config.FORCE_REFRESH_WAIT_SEC)
+        await query.edit_message_text(
+            build_status_text(), parse_mode=ParseMode.HTML, reply_markup=status_view_kb()
+        )
+    elif data == "force:traffic":
+        if NODES:
+            await query.edit_message_text("⏳ 正在请求节点立即上报，请稍候…")
+            for nid in NODES:
+                request_refresh(nid)
+            await asyncio.sleep(config.FORCE_REFRESH_WAIT_SEC)
+        await query.edit_message_text(
+            build_traffic_text(), parse_mode=ParseMode.HTML, reply_markup=traffic_view_kb()
+        )
+    elif data.startswith("force:node:"):
+        nid = data.split(":", 2)[2]
+        if nid not in NODES:
+            await query.edit_message_text("该节点数据已不存在。", reply_markup=nodes_list_kb())
+        else:
+            name = html.escape(NODES[nid]["name"])
+            await query.edit_message_text(f"⏳ 正在请求 {name} 立即上报，请稍候…")
+            request_refresh(nid)
+            await asyncio.sleep(config.FORCE_REFRESH_WAIT_SEC)
+            if nid in NODES:
+                await query.edit_message_text(
+                    build_node_text(nid), parse_mode=ParseMode.HTML, reply_markup=node_detail_kb(nid)
+                )
+            else:
+                await query.edit_message_text("节点已不存在或已被摘除。", reply_markup=nodes_list_kb())
 
 
 async def send_alert(text: str):
@@ -455,6 +497,20 @@ async def report(payload: ReportPayload, authorization: str = Header(None)):
         "last_seen": time.time(),
     }
     return {"ok": True}
+
+
+@app.get("/refresh_check/{node_id}")
+async def refresh_check(node_id: str, authorization: str = Header(None)):
+    """Agent 轻量轮询用的接口：问一下"要不要立刻上报"。
+    命中一次就从待刷新集合里取走，避免同一次点击触发反复上报。"""
+    expected = f"Bearer {config.AUTH_TOKEN}"
+    if not authorization or not hmac.compare_digest(authorization, expected):
+        raise HTTPException(status_code=401, detail="invalid token")
+
+    if node_id in PENDING_REFRESH:
+        PENDING_REFRESH.discard(node_id)
+        return {"refresh": True}
+    return {"refresh": False}
 
 
 if __name__ == "__main__":
