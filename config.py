@@ -46,3 +46,8 @@ STALE_REMOVE_SEC = int(os.environ.get("PROBE_STALE_REMOVE_DAYS", "7")) * 86400
 
 # --- 后台巡检间隔 ---
 CHECK_INTERVAL_SEC = int(os.environ.get("PROBE_CHECK_INTERVAL_SEC", "15"))
+
+# --- 主动刷新等待时间 ---
+# 点"刷新"按钮后，等待这么多秒再读取数据（要大于 Agent 的轮询间隔 + 网络延迟，
+# 默认 Agent 每 3 秒问一次，这里给够余量）
+FORCE_REFRESH_WAIT_SEC = int(os.environ.get("PROBE_FORCE_REFRESH_WAIT_SEC", "6"))
