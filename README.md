@@ -14,17 +14,8 @@
 
 # 安装依赖
 
-if command -v apt &>/dev/null; then
-  sudo apt update && sudo apt install -y python3 python3-venv python3-pip git
-elif command -v dnf &>/dev/null; then
-  sudo dnf install -y python3 python3-pip git
-elif command -v yum &>/dev/null; then
-  sudo yum install -y python3 python3-pip git
-elif command -v apk &>/dev/null; then
-  sudo apk add python3 py3-pip git
-else
-  echo "未识别的系统，请手动安装: python3 python3-venv python3-pip git"
-fi
+if command -v apt >/dev/null 2>&1; then sudo apt update && sudo apt install -y python3 python3-venv python3-pip git; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y python3 python3-pip git; elif command -v yum >/dev/null 2>&1; then sudo yum install -y python3 python3-pip git; elif command -v apk >/dev/null 2>&1; then sudo apk add python3 py3-pip git; else echo "未识别的系统，请手动安装: python3 python3-venv python3-pip git"; fi
+
 
 # 安装git
 
