@@ -31,7 +31,7 @@ SERVER_URL = _require("PROBE_SERVER_URL")
 AUTH_TOKEN = _require("PROBE_AUTH_TOKEN")
 NODE_ID = _require("PROBE_NODE_ID")
 NODE_NAME = os.environ.get("PROBE_NODE_NAME", NODE_ID)
-REPORT_INTERVAL_SEC = int(os.environ.get("PROBE_REPORT_INTERVAL_SEC", "15"))
+REPORT_INTERVAL_SEC = int(os.environ.get("PROBE_REPORT_INTERVAL_SEC", "5"))
 
 # 除了定时上报，Agent 还会用这个更短的间隔轻量问一下服务端"要不要立刻上报一次"
 # （对应 Bot 里点"刷新"按钮的场景），请求很小，正常情况几乎不耗资源
@@ -53,12 +53,23 @@ if not SERVER_URL.startswith("https://") and not ALLOW_HTTP:
 
 
 def collect():
-    cpu = psutil.cpu_percent(interval=1)
+    # percpu=True 一次性拿到每个核心的使用率，整机 CPU% 直接取均值，
+    # 不用再额外调用一次 cpu_percent（避免多阻塞 1 秒）
+    cpu_per_core = psutil.cpu_percent(interval=1, percpu=True)
+    cpu = sum(cpu_per_core) / len(cpu_per_core) if cpu_per_core else 0.0
+
     mem = psutil.virtual_memory().percent
     disk = psutil.disk_usage("/").percent
     uptime = time.time() - psutil.boot_time()
     net = psutil.net_io_counters()
-    return cpu, mem, disk, uptime, net
+
+    # 负载均值 1/5/15 分钟，Windows 等平台可能不支持，降级为 0
+    try:
+        load1, load5, load15 = psutil.getloadavg()
+    except (AttributeError, OSError):
+        load1 = load5 = load15 = 0.0
+
+    return cpu, cpu_per_core, mem, disk, uptime, net, (load1, load5, load15)
 
 
 def check_force_refresh(session) -> bool:
@@ -79,7 +90,8 @@ def check_force_refresh(session) -> bool:
 
 def report_once(session, prev_net, prev_time):
     """采集并上报一次，返回最新的 (net, now) 供下次计算速率用"""
-    cpu, mem, disk, uptime, net = collect()
+    cpu, cpu_per_core, mem, disk, uptime, net, loadavg = collect()
+    load1, load5, load15 = loadavg
 
     now = time.time()
     elapsed = max(now - prev_time, 1e-6)
@@ -90,6 +102,7 @@ def report_once(session, prev_net, prev_time):
         "node_id": NODE_ID,
         "name": NODE_NAME,
         "cpu": cpu,
+        "cpu_per_core": cpu_per_core,
         "mem": mem,
         "disk": disk,
         "net_up": max(net_up, 0),
@@ -97,6 +110,9 @@ def report_once(session, prev_net, prev_time):
         "net_sent_total": net.bytes_sent,
         "net_recv_total": net.bytes_recv,
         "uptime": uptime,
+        "load1": load1,
+        "load5": load5,
+        "load15": load15,
     }
 
     try:
