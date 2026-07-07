@@ -23,6 +23,10 @@ sudo apt update && sudo apt install -y git
 
 ## 快速开始
 
+## 机器人管理
+
+sudo bash manage.sh
+
 
 ```bash
 git clone https://github.com/lje02/probe-bot.git
