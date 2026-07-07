@@ -262,6 +262,3 @@ sudo bash manage.sh stop         # 停止
 sudo bash manage.sh uninstall    # 卸载
 ```
 
-## License
-
-MIT（占位，按你实际情况改成想用的协议，或删掉这节）
