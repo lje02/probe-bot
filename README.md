@@ -14,6 +14,10 @@
 - ⚙️ **一键部署** — 安装脚本自动配 systemd 常驻服务，异常退出自动重启
 - 📉 **低资源占用** — systemd 资源配额限制，探针本身不会跟业务进程抢资源
 
+# 安装git
+
+sudo apt update && sudo apt install -y git
+
 ## 快速开始
 
 ```bash
