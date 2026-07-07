@@ -14,6 +14,45 @@ RUN_USER="${SUDO_USER:-$(whoami)}"
 
 echo "==> 安装目录: $INSTALL_DIR"
 
+# ---------------------------------------------------------------------------
+# 0. 自动检测并安装系统级依赖 (python3 / venv 模块 / pip / git)
+#    已经装好的话直接跳过，不会重复安装
+# ---------------------------------------------------------------------------
+ensure_system_deps() {
+  local need_install=0
+  command -v python3 >/dev/null 2>&1 || need_install=1
+  command -v git >/dev/null 2>&1 || need_install=1
+  python3 -m venv --help >/dev/null 2>&1 || need_install=1
+
+  if [ "$need_install" = "0" ]; then
+    echo "==> 系统依赖 (python3/venv/git) 已齐全，跳过"
+    return
+  fi
+
+  echo "==> 检测到缺少系统依赖，尝试自动安装..."
+  if command -v apt >/dev/null 2>&1; then
+    apt update && apt install -y python3 python3-venv python3-pip git
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y python3 python3-pip git
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y python3 python3-pip git
+  elif command -v apk >/dev/null 2>&1; then
+    apk add python3 py3-pip git
+  else
+    echo "!! 无法识别系统的包管理器，请手动安装: python3 python3-venv python3-pip git"
+    exit 1
+  fi
+
+  if ! python3 -m venv --help >/dev/null 2>&1; then
+    echo "!! python3 的 venv 模块仍不可用。"
+    echo "   Debian/Ubuntu 有时需要装指定版本，比如: apt install python3.11-venv"
+    echo "   请手动排查后重新运行本脚本。"
+    exit 1
+  fi
+  echo "==> 系统依赖安装完成"
+}
+ensure_system_deps
+
 # 1. 检查/生成 .env，缺哪个交互式问哪个（图省事也可以直接手动编辑 .env 后再运行本脚本）
 if [ ! -f "$INSTALL_DIR/.env" ]; then
   cp "$INSTALL_DIR/.env.agent.example" "$INSTALL_DIR/.env"
