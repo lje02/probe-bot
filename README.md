@@ -23,15 +23,15 @@ sudo apt update && sudo apt install -y git
 
 ## 快速开始
 
-## 机器人管理
-
-sudo bash manage.sh
-
 
 ```bash
 git clone https://github.com/lje02/probe-bot.git
 cd probe-bot
 ```
+
+## 机器人管理
+
+sudo bash manage.sh
 
 接下来分「服务端」「Agent」两部分部署，跳到下面对应章节。
 
