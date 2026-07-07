@@ -70,7 +70,7 @@ sudo bash install_server.sh
 
 `config.py` 里 `PROBE_SERVER_HOST` 默认兜底是 `127.0.0.1`，但你实际部署时要按下面"安全部署"里的说明，改成 WireGuard 网卡的内网 IP，Agent 才能连上。
 
-## 安全部署（你已经有 WireGuard，直接用它，不需要 Tailscale/Nginx）
+## 安全部署（安装配置好 WireGuard，另外支持 Nginx + HTTPS）
 
 WireGuard 隧道内的流量本身就是加密的，所以只要服务端和 Agent 之间**只通过 WireGuard 的内网 IP 通信**（不经过公网 IP），明文 HTTP 就是安全的。核心思路：让 8000 端口只在 WireGuard 网卡上监听，公网网卡完全不监听这个端口。
 
