@@ -18,6 +18,10 @@
 
 sudo apt update && sudo apt install -y git
 
+## 管理脚本
+
+sudo bash manage.sh
+
 ## 快速开始
 
 ```bash
