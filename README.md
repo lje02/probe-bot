@@ -17,7 +17,7 @@
 ## 快速开始
 
 ```bash
-git clone https://github.com/<your-username>/probe-bot.git
+git clone https://github.com/lje02/probe-bot.git
 cd probe-bot
 ```
 
@@ -128,7 +128,7 @@ Agent 端 `.env` 里 `PROBE_SERVER_URL` 填 `https://probe.yourdomain.com/report
 在每台要监控的服务器上都 clone 一份：
 
 ```bash
-git clone https://github.com/<your-username>/probe-bot.git
+git clone https://github.com/lje02/probe-bot.git
 cd probe-bot
 sudo bash install_agent.sh
 ```
