@@ -14,6 +14,10 @@
 - ⚙️ **一键部署** — 安装脚本自动配 systemd 常驻服务，异常退出自动重启
 - 📉 **低资源占用** — systemd 资源配额限制，探针本身不会跟业务进程抢资源
 
+# 依赖安装
+
+if command -v apt >/dev/null 2>&1; then sudo apt update && sudo apt install -y python3 python3-venv python3-pip git; elif command -v dnf >/dev/null 2>&1; then sudo dnf install -y python3 python3-pip git; elif command -v yum >/dev/null 2>&1; then sudo yum install -y python3 python3-pip git; elif command -v apk >/dev/null 2>&1; then sudo apk add python3 py3-pip git; else echo "未识别的系统，请手动安装: python3 python3-venv python3-pip git"; fi
+
 # 安装git
 
 sudo apt update && sudo apt install -y git
