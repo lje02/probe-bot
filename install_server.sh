@@ -95,6 +95,15 @@ fi
 chmod 600 "$INSTALL_DIR/.env"
 chown "$RUN_USER" "$INSTALL_DIR/.env"
 
+# 关键依赖硬编码在这里做兜底 —— 万一 requirements_server.txt 文件本身传输/提交时损坏
+# (比如少了某一行)，脚本不会傻乎乎地装完就算数，而是会自动按这份清单重装修复
+REQUIRED_PACKAGES=(
+  "fastapi>=0.110"
+  "uvicorn[standard]>=0.29"
+  "python-telegram-bot>=21.0"
+  "python-dotenv>=1.0"
+)
+
 # 2. 建虚拟环境 + 装依赖（虚拟环境避免污染系统 Python，也方便控制版本）
 if [ ! -d "$INSTALL_DIR/.venv" ]; then
   echo "==> 创建虚拟环境..."
@@ -105,13 +114,19 @@ fi
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -r "$INSTALL_DIR/requirements_server.txt"
 
-# 验证关键依赖真的装上了（曾经出现过 pip 表面成功、实际某个包缺失的情况）
+# 验证关键依赖真的装上了；不通过就自动用硬编码清单重装一次，而不是直接报错让人手动排查
 if ! "$INSTALL_DIR/.venv/bin/python" -c "import fastapi, uvicorn, telegram, dotenv" 2>/dev/null; then
-  echo ""
-  echo "!! 依赖安装校验失败，虚拟环境里缺少必要的包。"
-  echo "   手动排查: $INSTALL_DIR/.venv/bin/pip install -r $INSTALL_DIR/requirements_server.txt"
-  echo "   如果还不行，试试删掉虚拟环境重建: rm -rf $INSTALL_DIR/.venv && sudo bash install_server.sh"
-  exit 1
+  echo "!! 依赖校验没通过（可能是 requirements_server.txt 内容不完整），自动尝试按标准清单修复..."
+  "$INSTALL_DIR/.venv/bin/pip" install -q "${REQUIRED_PACKAGES[@]}"
+
+  if ! "$INSTALL_DIR/.venv/bin/python" -c "import fastapi, uvicorn, telegram, dotenv" 2>/dev/null; then
+    echo ""
+    echo "!! 自动修复也没成功，大概率是网络问题（连不上 PyPI）。"
+    echo "   手动排查: $INSTALL_DIR/.venv/bin/pip install ${REQUIRED_PACKAGES[*]}"
+    echo "   如果还不行，试试删掉虚拟环境重建: rm -rf $INSTALL_DIR/.venv && sudo bash install_server.sh"
+    exit 1
+  fi
+  echo "==> 自动修复成功"
 fi
 echo "==> 依赖校验通过"
 
