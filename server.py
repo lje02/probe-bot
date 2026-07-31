@@ -140,12 +140,13 @@ def build_help_text() -> str:
         "点击下方按钮查看节点状态、流量统计，或用命令：\n"
         "/status — 所有节点一览\n"
         "/traffic — 累计流量\n"
-        "/node &lt;节点名&gt; — 单节点详情\n"
-        "/remove &lt;节点名&gt; — 摘除节点\n\n"
+        "/node &lt;节点名或节点ID&gt; — 单节点详情\n"
+        "/remove &lt;节点名或节点ID&gt; — 摘除节点\n\n"
+        "节点名如果重复，请改用节点 ID（唯一）精确指定。\n"
         "节点详情页有「🗑 摘除节点」按钮，需二次确认才会真正删除。\n"
         "长期离线（默认 7 天）的节点会自动清理，无需手动处理。\n"
         "摘除/清理后如果该节点重新上报，会自动再次出现在列表里。\n\n"
-        "节点异常（离线 / 高负载）时会自动推送提醒，无需手动查询。"
+        "节点异常（离线 / 资源占用过高）时会自动推送提醒，无需手动查询。"
     )
 
 
@@ -226,6 +227,25 @@ def remove_node(node_id: str):
     PENDING_REFRESH.discard(node_id)
 
 
+def resolve_node(identifier: str) -> tuple[str | None, str | None]:
+    """按 /node 、/remove 命令的输入查找节点。
+    NODE_ID 是唯一的，优先精确匹配；只有匹配不到 ID 时才退回按展示名(NODE_NAME)匹配，
+    展示名可能重复，重名时不再随便取第一个，而是提示改用 ID。
+    返回 (node_id, error_html)，找到时 error_html 为 None。"""
+    if identifier in NODES:
+        return identifier, None
+    matched = [nid for nid, n in NODES.items() if n["name"] == identifier]
+    if not matched:
+        return None, f"未找到节点: {html.escape(identifier)}"
+    if len(matched) > 1:
+        ids = "、".join(html.escape(nid) for nid in matched)
+        return None, (
+            f"节点名 <b>{html.escape(identifier)}</b> 对应多个节点，"
+            f"请改用节点 ID 精确指定，例如: {ids}"
+        )
+    return matched[0], None
+
+
 # ---------------------------------------------------------------------------
 # 命令入口（/start /status /traffic /node）
 # ---------------------------------------------------------------------------
@@ -255,12 +275,11 @@ async def cmd_node(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "请选择要查看的节点：", reply_markup=nodes_list_kb()
         )
         return
-    name = " ".join(context.args)
-    matched = [nid for nid, n in NODES.items() if n["name"] == name]
-    if not matched:
-        await update.message.reply_text(f"未找到节点: {name}")
+    identifier = " ".join(context.args)
+    nid, err = resolve_node(identifier)
+    if err:
+        await update.message.reply_text(err, parse_mode=ParseMode.HTML)
         return
-    nid = matched[0]
     await update.message.reply_text(
         build_node_text(nid), parse_mode=ParseMode.HTML, reply_markup=node_detail_kb(nid)
     )
@@ -270,12 +289,12 @@ async def cmd_remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("用法: /remove <节点名称>")
         return
-    name = " ".join(context.args)
-    matched = [nid for nid, n in NODES.items() if n["name"] == name]
-    if not matched:
-        await update.message.reply_text(f"未找到节点: {name}")
+    identifier = " ".join(context.args)
+    nid, err = resolve_node(identifier)
+    if err:
+        await update.message.reply_text(err, parse_mode=ParseMode.HTML)
         return
-    nid = matched[0]
+    name = NODES[nid]["name"]
     await update.message.reply_text(
         f"确定要摘除节点 <b>{html.escape(name)}</b> 吗？\n"
         f"（摘除后如果该节点重新上报会自动再次出现）",
@@ -419,17 +438,19 @@ async def monitor_loop():
                 state["offline"] = False
                 await send_alert(f"🟢 <b>[恢复]</b> {name} 已恢复上报")
 
-            # 高负载检测（离线时不重复判断）
+            # 资源占用检测（CPU/内存超阈值，离线时不重复判断）
+            # 注意：这里判断的是 CPU%/内存% 是否超阈值，跟 node 详情页展示的
+            # load1/5/15（系统负载均值）是两回事，文案上要分清楚避免混淆
             if not is_offline:
                 high = n["cpu"] > config.CPU_THRESHOLD or n["mem"] > config.MEM_THRESHOLD
                 if high and not state["high_load"]:
                     state["high_load"] = True
                     await send_alert(
-                        f"🔥 <b>[高负载]</b> {name} CPU {n['cpu']:.0f}% MEM {n['mem']:.0f}%"
+                        f"🔥 <b>[资源占用过高]</b> {name} CPU {n['cpu']:.0f}% MEM {n['mem']:.0f}%"
                     )
                 elif not high and state["high_load"]:
                     state["high_load"] = False
-                    await send_alert(f"✅ <b>[恢复]</b> {name} 负载已恢复正常")
+                    await send_alert(f"✅ <b>[恢复]</b> {name} 资源占用已恢复正常")
 
 
 # ---------------------------------------------------------------------------
