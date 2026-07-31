@@ -36,6 +36,13 @@ SERVER_PORT = int(os.environ.get("PROBE_SERVER_PORT", "8000"))
 CPU_THRESHOLD = float(os.environ.get("PROBE_CPU_THRESHOLD", "90"))
 MEM_THRESHOLD = float(os.environ.get("PROBE_MEM_THRESHOLD", "90"))
 
+# --- 报警去抖(滞回区间) ---
+# 恢复阈值 = 报警阈值 - 这个余量，避免指标刚好卡在报警阈值上下来回跳导致反复报警/恢复刷屏
+# 例如 CPU_THRESHOLD=90、ALERT_RECOVER_MARGIN=10 时：CPU > 90% 报警，要降到 80% 以下才算恢复
+ALERT_RECOVER_MARGIN = float(os.environ.get("PROBE_ALERT_RECOVER_MARGIN", "10"))
+CPU_RECOVER_THRESHOLD = max(CPU_THRESHOLD - ALERT_RECOVER_MARGIN, 0)
+MEM_RECOVER_THRESHOLD = max(MEM_THRESHOLD - ALERT_RECOVER_MARGIN, 0)
+
 # --- 离线判定 ---
 # 超过这么多秒没收到某节点的上报，就判定为离线
 OFFLINE_THRESHOLD_SEC = int(os.environ.get("PROBE_OFFLINE_THRESHOLD_SEC", "90"))
