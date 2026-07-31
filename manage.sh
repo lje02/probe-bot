@@ -15,8 +15,23 @@ SERVER_SVC="probe-server"
 AGENT_SVC="probe-agent"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 
-server_installed() { [ -f "${SYSTEMD_DIR}/${SERVER_SVC}.service" ]; }
-agent_installed()  { [ -f "${SYSTEMD_DIR}/${AGENT_SVC}.service" ]; }
+svc_installed() {
+  [ -f "${SYSTEMD_DIR}/$1.service" ]
+}
+server_installed() { svc_installed "$SERVER_SVC"; }
+agent_installed()  { svc_installed "$AGENT_SVC"; }
+
+# 对"要求服务已安装"的操作做统一前置检查，未安装则给出提示并让调用方 return，
+# 而不是让后面的 systemctl 命令在 set -e 下直接把整个脚本带崩
+require_installed() {
+  local svc="$1"
+  if ! svc_installed "$svc"; then
+    echo ""
+    echo "!! $svc 尚未安装，请先执行「1) 安装 / 首次配置」。"
+    return 1
+  fi
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # 选择本次要管理的服务（服务端 / Agent）
@@ -74,6 +89,7 @@ choose_service_for_install() {
 
 do_update() {
   local svc; svc=$(choose_service)
+  require_installed "$svc" || return 0
 
   if [ -d .git ]; then
     echo "==> 拉取最新代码..."
@@ -93,17 +109,20 @@ do_update() {
 
 do_status() {
   local svc; svc=$(choose_service)
+  require_installed "$svc" || return 0
   systemctl status "$svc" --no-pager || true
 }
 
 do_logs() {
   local svc; svc=$(choose_service)
+  require_installed "$svc" || return 0
   echo "==> 实时日志 (Ctrl+C 退出)"
   journalctl -u "$svc" -f
 }
 
 do_restart() {
   local svc; svc=$(choose_service)
+  require_installed "$svc" || return 0
   systemctl restart "$svc"
   echo "==> 已重启 $svc"
   sleep 1
@@ -112,12 +131,14 @@ do_restart() {
 
 do_stop() {
   local svc; svc=$(choose_service)
+  require_installed "$svc" || return 0
   systemctl stop "$svc"
   echo "==> 已停止 $svc（开机自启还在，下次开机会自动拉起；如果不想自启，选卸载菜单里的对应选项）"
 }
 
 do_uninstall() {
   local svc; svc=$(choose_service)
+  require_installed "$svc" || return 0
 
   echo ""
   echo "!! 即将卸载 $svc，这会："
