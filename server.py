@@ -14,12 +14,14 @@
 import asyncio
 import hmac
 import html
+import logging
+import re
 import time
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -30,6 +32,8 @@ from telegram.ext import (
 )
 
 import config
+
+logger = logging.getLogger("probe_server")
 
 # ---------------------------------------------------------------------------
 # 内存状态存储：{node_id: {...}}
@@ -269,6 +273,12 @@ async def cmd_traffic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        build_help_text(), parse_mode=ParseMode.HTML, reply_markup=main_menu_kb()
+    )
+
+
 async def cmd_node(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
@@ -411,6 +421,19 @@ async def send_alert(text: str):
     )
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """全局错误处理：命令/按钮回调里抛出的异常，框架默认只是打日志，用户端看起来像"没反应"。
+    这里补一条日志 + 尽量给用户一个提示，方便排查也不至于误以为 Bot 卡死。"""
+    logger.exception("处理更新时出错: %r", update, exc_info=context.error)
+    if isinstance(update, Update):
+        message = update.effective_message
+        if message is not None:
+            try:
+                await message.reply_text("⚠️ 处理请求时出错，请稍后再试。")
+            except Exception:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # 后台任务：定期检查离线 & 阈值报警
 # ---------------------------------------------------------------------------
@@ -441,24 +464,40 @@ async def monitor_loop():
             # 资源占用检测（CPU/内存超阈值，离线时不重复判断）
             # 注意：这里判断的是 CPU%/内存% 是否超阈值，跟 node 详情页展示的
             # load1/5/15（系统负载均值）是两回事，文案上要分清楚避免混淆
+            #
+            # 报警/恢复用两条不同的线（滞回区间）：超过 CPU_THRESHOLD/MEM_THRESHOLD 才报警，
+            # 要降到更低的 CPU_RECOVER_THRESHOLD/MEM_RECOVER_THRESHOLD 以下才算恢复，
+            # 避免指标刚好卡在阈值附近来回跳导致反复报警/恢复刷屏
             if not is_offline:
-                high = n["cpu"] > config.CPU_THRESHOLD or n["mem"] > config.MEM_THRESHOLD
-                if high and not state["high_load"]:
-                    state["high_load"] = True
-                    await send_alert(
-                        f"🔥 <b>[资源占用过高]</b> {name} CPU {n['cpu']:.0f}% MEM {n['mem']:.0f}%"
+                if state["high_load"]:
+                    recovered = (
+                        n["cpu"] < config.CPU_RECOVER_THRESHOLD
+                        and n["mem"] < config.MEM_RECOVER_THRESHOLD
                     )
-                elif not high and state["high_load"]:
-                    state["high_load"] = False
-                    await send_alert(f"✅ <b>[恢复]</b> {name} 资源占用已恢复正常")
+                    if recovered:
+                        state["high_load"] = False
+                        await send_alert(f"✅ <b>[恢复]</b> {name} 资源占用已恢复正常")
+                else:
+                    high = n["cpu"] > config.CPU_THRESHOLD or n["mem"] > config.MEM_THRESHOLD
+                    if high:
+                        state["high_load"] = True
+                        await send_alert(
+                            f"🔥 <b>[资源占用过高]</b> {name} CPU {n['cpu']:.0f}% MEM {n['mem']:.0f}%"
+                        )
 
 
 # ---------------------------------------------------------------------------
 # 上报数据的校验模型 —— 字段缺失/类型不对时，返回清晰的 422 而不是裸 500
 # ---------------------------------------------------------------------------
+# node_id 会被拼进 Telegram callback_data 和 URL 路径，限制成安全字符集 + 长度上限，
+# 防止空值/超长/怪字符把按钮解析或 refresh_check 的路由搞坏
+NODE_ID_PATTERN = r"^[A-Za-z0-9._-]{1,64}$"
+NODE_ID_RE = re.compile(NODE_ID_PATTERN)
+
+
 class ReportPayload(BaseModel):
-    node_id: str
-    name: str = ""
+    node_id: str = Field(..., pattern=NODE_ID_PATTERN)
+    name: str = Field("", max_length=64)
     cpu: float
     cpu_per_core: list[float] = []
     mem: float
@@ -486,7 +525,9 @@ async def lifespan(app: FastAPI):
     bot_app.add_handler(CommandHandler("node", cmd_node))
     bot_app.add_handler(CommandHandler("traffic", cmd_traffic))
     bot_app.add_handler(CommandHandler("remove", cmd_remove))
+    bot_app.add_handler(CommandHandler("help", cmd_help))
     bot_app.add_handler(CallbackQueryHandler(on_button_click))
+    bot_app.add_error_handler(on_error)
 
     await bot_app.initialize()
 
@@ -497,6 +538,7 @@ async def lifespan(app: FastAPI):
         ("node", "查看单个节点详情"),
         ("traffic", "查看流量统计"),
         ("remove", "摘除指定节点"),
+        ("help", "查看使用说明"),
     ])
 
     await bot_app.start()
@@ -547,6 +589,8 @@ async def refresh_check(node_id: str, authorization: str = Header(None)):
     expected = f"Bearer {config.AUTH_TOKEN}"
     if not authorization or not hmac.compare_digest(authorization, expected):
         raise HTTPException(status_code=401, detail="invalid token")
+    if not NODE_ID_RE.match(node_id):
+        raise HTTPException(status_code=400, detail="invalid node_id")
 
     if node_id in PENDING_REFRESH:
         PENDING_REFRESH.discard(node_id)
