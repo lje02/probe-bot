@@ -135,7 +135,9 @@ echo "==> 依赖校验通过"
 #   Nice=19            调度优先级降到最低，不和业务进程抢 CPU
 #   IOSchedulingClass=idle  磁盘 IO 优先级最低
 #   CPUQuota=20%        最多用 20% 的一个核心
-#   MemoryMax=150M      内存超过这个数会被 OOM kill，防止意外泄漏拖垮整机
+#   MemoryMax=256M      内存超过这个数会被 OOM kill，防止意外泄漏拖垮整机
+#                       (fastapi+uvicorn+python-telegram-bot 启动阶段就占约 60MB，
+#                        实际运行后大概 80-110MB，256M 留出更充裕的缓冲空间)
 cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=Probe Bot Server
@@ -153,7 +155,7 @@ RestartSec=5
 Nice=19
 IOSchedulingClass=idle
 CPUQuota=20%
-MemoryMax=150M
+MemoryMax=256M
 
 [Install]
 WantedBy=multi-user.target
